@@ -1,0 +1,7 @@
+xdsl>=0.20.0
+torch>=1.9.0
+pyyaml>=6.0
+click>=8.0
+numpy>=1.20.0
+
+orion-fhe 
