@@ -207,47 +207,6 @@ class LWEEncodingHandler(BaseOperationHandler):
         
         return current_value
 
-class CKKSMatMulHandler(BaseOperationHandler):
-    """Handler for CKKS matrix multiplication operations."""
-    
-    def handle(self, 
-              operation: FHEOperation,
-              current_value: SSAValue,
-              block: Block,
-              constants: Dict[str, SSAValue],
-              type_builder: Any) -> SSAValue:
-        """Handle CKKS matrix multiplication operations."""
-        from ..dialects.ckks import MatMulOp
-        
-        print(f"🔧 MatMul handler: Looking for weight operand")
-        print(f"    Available constants: {list(constants.keys())}")
-        print(f"    Operation metadata: {operation.metadata}")
-        
-        # Get weight operand - look for the plaintext input mentioned in metadata
-        weight = None
-        if operation.metadata and 'plaintext_input' in operation.metadata:
-            weight_key = operation.metadata['plaintext_input']
-            weight = constants.get(weight_key)
-            print(f"    Looking for weight with key: {weight_key}")
-        
-        if weight is None:
-            print(f"❌ No weight operand found for matmul")
-            return current_value
-        
-        print(f"✅ Found weight operand, creating matmul operation")
-        
-        # Determine result type (for now, same as input)
-        result_type = current_value.type
-        
-        # Create the matmul operation
-        matmul_op = MatMulOp(
-            operands=[current_value, weight],
-            result_types=[result_type]
-        )
-        
-        block.add_op(matmul_op)
-        print(f"✅ Created ckks.matmul operation")
-        return matmul_op.results[0]
 
 class OperationRegistry:
     """
@@ -282,8 +241,8 @@ class OperationRegistry:
         self.handlers['encode'] = LWEEncodingHandler()
         
         # Linear transform operations (decomposed to rotations)
-        self.handlers['matmul'] = CKKSMatMulHandler()
-    
+        self.handlers['linear_transform'] = CKKSLinearTransformHandler() 
+
     def register_operation(self, op_type: str, handler: OperationHandler):
         """Register a custom operation handler."""
         self.handlers[op_type] = handler
@@ -311,8 +270,8 @@ class OperationRegistry:
             return current_value
 
 
-class LinearTransformHandler(BaseOperationHandler):
-    """Handler for linear transform operations (decomposed to rotations)."""
+class CKKSLinearTransformHandler(BaseOperationHandler):
+    """Handler for CKKS linear transform operations."""
     
     def handle(self, 
               operation: FHEOperation,
@@ -320,49 +279,23 @@ class LinearTransformHandler(BaseOperationHandler):
               block: Block,
               constants: Dict[str, SSAValue],
               type_builder: Any) -> SSAValue:
-        """Handle linear transform by decomposing to rotations and multiplications."""
+        """Handle CKKS linear transform operations."""
+        from ..dialects.ckks import LinearTransformOp
         
-        # For simplicity, decompose to a few rotation+multiply operations
-        import torch
+        print(f"🔧 LinearTransform handler: Processing Orion linear transform")
+        print(f"    Operation metadata: {operation.metadata}")
         
-        if not operation.args or not isinstance(operation.args[0], torch.Tensor):
-            return current_value
+        # Determine result type (same as input for now)
+        result_type = current_value.type
         
-        results = []
-        matrix = operation.args[0]
+        # Create the linear transform operation
+        # This represents Orion's diagonal-based matrix multiplication
+        linear_transform_op = LinearTransformOp(
+            operands=[current_value],
+            result_types=[result_type]
+        )
         
-        # Limit to first few elements for demonstration
-        for i in range(min(3, matrix.shape[1] if len(matrix.shape) > 1 else 1)):
-            if i > 0:
-                # Create rotation
-                rotate_op = CKKSRotationHandler()
-                rot_operation = FHEOperation('rotate', 'rot', [i], {}, f'rot_{i}')
-                rotated = rotate_op.handle(rot_operation, current_value, block, constants, type_builder)
-            else:
-                rotated = current_value
-            
-            # Multiply with constant if available
-            pt_key = f"pt_{operation.result_var}_{i}" if operation.result_var else f"constant_{i}"
-            if pt_key in constants:
-                mul_handler = CKKSPlaintextHandler(None)  # Will be set by registry
-                from ..dialects.ckks import MulPlainOp
-                mul_handler.op_class = MulPlainOp
-                
-                mul_operation = FHEOperation('mul_plain', 'mul_plain', [], {}, operation.result_var)
-                result = mul_handler.handle(mul_operation, rotated, block, constants, type_builder)
-                results.append(result)
-        
-        # Accumulate results with addition
-        if results:
-            accumulated = results[0]
-            for result in results[1:]:
-                from ..dialects.ckks import AddOp
-                add_op = AddOp(
-                    operands=[accumulated, result],
-                    result_types=[accumulated.type]
-                )
-                block.add_op(add_op)
-                accumulated = add_op.results[0]
-            return accumulated
-        
-        return current_value
+        block.add_op(linear_transform_op)
+        print(f"✅ Created ckks.linear_transform operation")
+        return linear_transform_op.results[0]
+

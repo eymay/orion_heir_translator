@@ -1,13 +1,13 @@
 """
-Clean Orion frontend with hardcoded CKKS operations.
+Orion frontend for the HEIR translator.
 
-This module provides the Orion frontend with built-in knowledge of all
-CKKS operations that Orion supports, including the new matmul operation.
+This module provides Orion-specific functionality for extracting operations
+and scheme parameters from Orion FHE computations.
 """
 
-from typing import List, Any, Dict, Optional
-import torch
+from typing import List, Any, Dict, Optional, Union
 import yaml
+import torch
 from pathlib import Path
 
 from ...core.types import FHEOperation, FrontendInterface, SchemeParameters
@@ -16,51 +16,46 @@ from .scheme_params import OrionSchemeParameters
 
 class OrionFrontend(FrontendInterface):
     """
-    Clean Orion frontend with hardcoded knowledge of CKKS operations.
+    Frontend for translating Orion FHE operations to HEIR.
     
-    This frontend contains built-in knowledge of all operations that
-    Orion supports, based on the CKKS homomorphic encryption scheme.
-    No templates or complex abstractions - just pure CKKS operations.
+    This class implements the FrontendInterface for Orion,
+    providing Orion-specific logic for operation extraction
+    and parameter handling from compiled Orion models.
     """
     
     def __init__(self):
-        # Hardcoded knowledge of Orion's CKKS operations
-        self._orion_operations = self._initialize_orion_operations()
-    
-    def _initialize_orion_operations(self) -> Dict[str, Dict]:
-        """Initialize hardcoded knowledge of Orion's supported operations."""
-        return {
-            # Core CKKS arithmetic operations
+        """Initialize the Orion frontend with supported operations."""
+        self._supported_operations = {
+            # CKKS arithmetic operations
             'add': {
-                'description': 'Homomorphic addition of two ciphertexts',
+                'description': 'Add two ciphertexts',
+                'operands': 2,
+                'level_change': 0,
+                'noise_growth': 'additive'
+            },
+            'sub': {
+                'description': 'Subtract two ciphertexts',
                 'operands': 2,
                 'level_change': 0,
                 'noise_growth': 'additive'
             },
             'mul': {
-                'description': 'Homomorphic multiplication of two ciphertexts', 
+                'description': 'Multiply two ciphertexts',
                 'operands': 2,
-                'level_change': -1,  # Consumes one level
+                'level_change': -1,
                 'noise_growth': 'multiplicative'
             },
-            'rotate': {
-                'description': 'Cyclic rotation of SIMD slots',
+            'negate': {
+                'description': 'Negate a ciphertext',
                 'operands': 1,
                 'level_change': 0,
-                'noise_growth': 'minimal',
-                'parameters': ['offset']
+                'noise_growth': 'minimal'
             },
             
-            # Plaintext operations
-            'mul_plain': {
-                'description': 'Multiply ciphertext with plaintext',
-                'operands': 2,  # ciphertext + plaintext
-                'level_change': 0,
-                'noise_growth': 'multiplicative_plain'
-            },
+            # CKKS plaintext operations
             'add_plain': {
                 'description': 'Add plaintext to ciphertext',
-                'operands': 2,  # ciphertext + plaintext  
+                'operands': 2,
                 'level_change': 0,
                 'noise_growth': 'minimal'
             },
@@ -70,20 +65,34 @@ class OrionFrontend(FrontendInterface):
                 'level_change': 0,
                 'noise_growth': 'minimal'
             },
-            
-            # Matrix multiplication operation (high-level)
-            'matmul': {
-                'description': 'Matrix multiplication (high-level operation)',
-                'operands': 2,  # ciphertext + plaintext
-                'level_change': 0,  # Will be determined by lowering pass
-                'noise_growth': 'depends_on_lowering'
+            'mul_plain': {
+                'description': 'Multiply ciphertext by plaintext',
+                'operands': 2,
+                'level_change': 0,
+                'noise_growth': 'linear'
             },
             
-            # Noise management operations
+            # CKKS rotation operations
+            'rotate': {
+                'description': 'Rotate ciphertext slots',
+                'operands': 1,
+                'level_change': 0,
+                'noise_growth': 'minimal'
+            },
+            
+            # Primary Orion operation
+            'linear_transform': {
+                'description': 'Orion linear transform using precomputed diagonals',
+                'operands': 1,
+                'level_change': -1,
+                'noise_growth': 'complex'
+            },
+            
+            # Noise management
             'rescale': {
                 'description': 'Rescale ciphertext to manage noise',
                 'operands': 1,
-                'level_change': -1,  # Moves to lower level
+                'level_change': -1,
                 'noise_growth': 'reduction'
             },
             'relinearize': {
@@ -93,13 +102,13 @@ class OrionFrontend(FrontendInterface):
                 'noise_growth': 'minimal'
             },
             'bootstrap': {
-                'description': 'Refresh ciphertext to enable more operations',
+                'description': 'Refresh ciphertext (reset noise and level)',
                 'operands': 1,
-                'level_change': 'reset',  # Resets to highest level
+                'level_change': 'reset',
                 'noise_growth': 'reset'
             },
             
-            # Encoding/decoding operations  
+            # Encoding operations
             'encode': {
                 'description': 'Encode plaintext for CKKS',
                 'operands': 1,
@@ -108,7 +117,7 @@ class OrionFrontend(FrontendInterface):
             },
             'decode': {
                 'description': 'Decode CKKS plaintext',
-                'operands': 1, 
+                'operands': 1,
                 'level_change': 0,
                 'noise_growth': 'none'
             },
@@ -126,131 +135,391 @@ class OrionFrontend(FrontendInterface):
             }
         }
     
-    def get_supported_operations(self) -> List[str]:
-        """Get list of all operations Orion supports."""
-        return list(self._orion_operations.keys())
+    def extract_operations(self, source: Any) -> List[FHEOperation]:
+        """
+        Extract FHE operations from various Orion sources.
+        
+        Args:
+            source: Can be:
+                - Compiled Orion model (after orion.compile())
+                - List of operation dictionaries
+                
+        Returns:
+            List of FHEOperation objects
+            
+        Raises:
+            ValueError: If source type is not supported
+        """
+        if self._is_compiled_orion_model(source):
+            return self._extract_from_compiled_model(source)
+        elif isinstance(source, (list, tuple)):
+            return self._extract_from_operation_list(source)
+        elif hasattr(source, 'operations'):
+            return self._extract_from_operation_list(source.operations)
+        else:
+            raise ValueError(
+                f"Unsupported source type: {type(source)}. "
+                f"Expected compiled Orion model or list of operations."
+            )
     
-    def get_operation_info(self, op_type: str) -> Optional[Dict]:
-        """Get information about a specific operation."""
-        return self._orion_operations.get(op_type)
+    def _is_compiled_orion_model(self, source: Any) -> bool:
+        """
+        Check if source is a compiled Orion model.
+        
+        A compiled Orion model should have been through orion.compile()
+        and have Orion-specific attributes.
+        """
+        if not hasattr(source, '__class__'):
+            return False
+            
+        # Check if it's from an Orion module
+        module_name = getattr(source.__class__, '__module__', '')
+        if 'orion' in module_name.lower():
+            return True
+            
+        # Check for Orion-specific attributes that appear after compilation
+        orion_indicators = [
+            'fc1', 'linear', 'conv',  # Common layer names
+            'he_mode',                # Orion-specific mode
+            'scheme',                 # Orion scheme reference
+        ]
+        
+        return any(hasattr(source, attr) for attr in orion_indicators)
     
-    def create_simple_test_operations(self) -> List[FHEOperation]:
-        """Create simple test operations for validation."""
+    def _extract_from_compiled_model(self, model: Any) -> List[FHEOperation]:
+        """
+        Extract operations from a compiled Orion model.
+        
+        This walks through the model's layers and emits the corresponding
+        CKKS operations that would be performed during HE inference.
+        """
         operations = []
         
-        # Input encoding
-        operations.append(FHEOperation(
-            op_type="encode",
-            method_name="rlwe_encode",
-            args=[torch.tensor([1.0, 2.0, 3.0, 4.0])],
-            kwargs={},
-            result_var="input_encoded",
-            level=2,
-            metadata={'operation': 'encode_input'}
-        ))
+        # Walk through all modules to find Orion layers
+        for layer_name, layer in model.named_modules():
+            if self._is_orion_layer(layer):
+                layer_operations = self._get_layer_operations(layer, layer_name)
+                operations.extend(layer_operations)
         
-        # Encode weight matrix
-        operations.append(FHEOperation(
-            op_type="encode",
-            method_name="rlwe_encode",
-            args=[torch.tensor([[1.0, 2.0, 3.0, 4.0], [0.5, 1.0, 1.5, 2.0]])],
-            kwargs={},
-            result_var="weight_encoded",
-            level=2,
-            metadata={'operation': 'encode_weight'}
-        ))
-        
-        # Matrix multiplication (now a first-class CKKS operation)
-        operations.append(FHEOperation(
-            op_type="matmul",
-            method_name="matmul",
-            args=[],
-            kwargs={},
-            result_var="matmul_result",
-            level=2,
-            metadata={'operation': 'matrix_multiplication', 'plaintext_input': 'weight_encoded'}
-        ))
+        if not operations:
+            raise ValueError(
+                "No Orion layers found in model. "
+                "Make sure the model has been compiled with orion.compile()."
+            )
         
         return operations
     
-    def create_basic_operation(self, op_type: str, **kwargs) -> Optional[FHEOperation]:
-        """Create a basic CKKS operation if it's supported by Orion."""
-        if op_type not in self._orion_operations:
-            return None
+    def _is_orion_layer(self, layer: Any) -> bool:
+        """
+        Check if a layer is an Orion layer that performs FHE operations.
         
-        op_info = self._orion_operations[op_type]
+        Orion layers typically have specific attributes set during compilation.
+        """
+        if not hasattr(layer, '__class__'):
+            return False
+            
+        # Check layer type
+        layer_type = layer.__class__.__name__
+        orion_layer_types = ['Linear', 'Conv2d', 'LinearTransform', 'Activation']
         
-        return FHEOperation(
-            op_type=op_type,
-            method_name=op_type,
-            args=kwargs.get('args', []),
-            kwargs=kwargs.get('operation_kwargs', {}), 
-            result_var=kwargs.get('result_var', f'{op_type}_result'),
-            level=kwargs.get('level', 2),
-            metadata={
-                'operation': op_type,
-                'description': op_info['description']
-            }
-        )
+        if layer_type in orion_layer_types:
+            # Additional check for Orion-specific compilation artifacts
+            compilation_indicators = [
+                'diagonals',      # Linear transform diagonals
+                'transform_ids',  # Backend transform IDs
+                'on_weight',      # Orion weight copy
+                'on_bias',        # Orion bias copy
+                'level',          # Assigned level
+            ]
+            
+            return any(hasattr(layer, attr) for attr in compilation_indicators)
+        
+        return False
     
-    # FrontendInterface implementation
-    def extract_operations(self, source: Any) -> List[FHEOperation]:
+    def _get_layer_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
         """
-        Extract operations from source.
-        Since we have minimal hardcoded operations, this is simple.
+        Get the CKKS operations for a specific compiled Orion layer.
+        
+        This emits the operations that correspond to what the layer
+        would do during HE inference, using its compiled artifacts.
         """
-        if isinstance(source, str):
-            if source == 'test':
-                return self.create_simple_test_operations()
+        layer_type = layer.__class__.__name__
+        
+        if layer_type == 'Linear':
+            return self._get_linear_operations(layer, layer_name)
+        elif layer_type == 'Conv2d':
+            return self._get_conv_operations(layer, layer_name)
+        elif layer_type in ['Activation', 'Quad', 'Chebyshev']:
+            return self._get_activation_operations(layer, layer_name)
+        else:
+            # Generic layer - try to infer operations
+            return self._get_generic_operations(layer, layer_name)
+    
+    def _get_linear_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for a Linear layer.
+        
+        Linear layers in Orion use precomputed diagonal transforms.
+        """
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        # Primary operation: linear transform using Orion's precomputed diagonals
+        if hasattr(layer, 'transform_ids') and layer.transform_ids:
+            operations.append(FHEOperation(
+                op_type="linear_transform",
+                method_name="linear_transform",
+                args=[],
+                kwargs={},
+                result_var=f"{layer_name}_linear",
+                level=level,
+                metadata={
+                    'operation': 'orion_linear_transform',
+                    'layer': layer_name,
+                    'layer_type': 'Linear',
+                    'transform_blocks': len(layer.transform_ids),
+                    'diagonal_count': len(layer.diagonals) if hasattr(layer, 'diagonals') else 0
+                }
+            ))
+        
+        # Output rotations if needed (SIMD packing optimizations)
+        if hasattr(layer, 'output_rotations') and layer.output_rotations > 0:
+            for i in range(layer.output_rotations):
+                # Rotation
+                operations.append(FHEOperation(
+                    op_type="rotate",
+                    method_name="rotate",
+                    args=[2**i],
+                    kwargs={"offset": 2**i},
+                    result_var=f"{layer_name}_rot_{i}",
+                    level=level,
+                    metadata={
+                        'operation': 'output_rotation',
+                        'layer': layer_name,
+                        'rotation_index': i
+                    }
+                ))
+                
+                # Accumulation
+                operations.append(FHEOperation(
+                    op_type="add",
+                    method_name="add",
+                    args=[],
+                    kwargs={},
+                    result_var=f"{layer_name}_acc_{i}",
+                    level=level,
+                    metadata={
+                        'operation': 'rotation_accumulation',
+                        'layer': layer_name,
+                        'rotation_index': i
+                    }
+                ))
+        
+        # Bias addition using Orion's precomputed bias plaintext
+        if hasattr(layer, 'bias') and layer.bias is not None:
+            operations.append(FHEOperation(
+                op_type="add_plain",
+                method_name="add_plain",
+                args=[],
+                kwargs={},
+                result_var=f"{layer_name}_result",
+                level=level,
+                metadata={
+                    'operation': 'bias_addition',
+                    'layer': layer_name,
+                    'layer_type': 'Linear'
+                }
+            ))
+        
+        return operations
+    
+    def _get_conv_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for a Conv2d layer.
+        
+        Convolution in Orion is implemented using linear transforms
+        with Toeplitz matrices converted to diagonals.
+        """
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        # Convolution as linear transform
+        if hasattr(layer, 'transform_ids') and layer.transform_ids:
+            operations.append(FHEOperation(
+                op_type="linear_transform",
+                method_name="linear_transform",
+                args=[],
+                kwargs={},
+                result_var=f"{layer_name}_conv",
+                level=level,
+                metadata={
+                    'operation': 'orion_convolution',
+                    'layer': layer_name,
+                    'layer_type': 'Conv2d',
+                    'transform_blocks': len(layer.transform_ids)
+                }
+            ))
+        
+        # Bias addition if present
+        if hasattr(layer, 'bias') and layer.bias is not None:
+            operations.append(FHEOperation(
+                op_type="add_plain",
+                method_name="add_plain",
+                args=[],
+                kwargs={},
+                result_var=f"{layer_name}_result",
+                level=level,
+                metadata={
+                    'operation': 'bias_addition',
+                    'layer': layer_name,
+                    'layer_type': 'Conv2d'
+                }
+            ))
+        
+        return operations
+    
+    def _get_activation_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for activation layers.
+        
+        Activation functions in FHE are polynomial approximations.
+        """
+        operations = []
+        level = getattr(layer, 'level', 1)
+        layer_type = layer.__class__.__name__
+        
+        if layer_type == 'Quad':
+            # Quadratic activation: x^2
+            operations.append(FHEOperation(
+                op_type="mul",
+                method_name="mul",
+                args=[],
+                kwargs={},
+                result_var=f"{layer_name}_quad",
+                level=level - 1,
+                metadata={
+                    'operation': 'quadratic_activation',
+                    'layer': layer_name,
+                    'layer_type': layer_type
+                }
+            ))
+        else:
+            # General polynomial activation (would need polynomial dialect)
+            # For now, represent as a placeholder
+            operations.append(FHEOperation(
+                op_type="mul",  # Simplified representation
+                method_name="mul",
+                args=[],
+                kwargs={},
+                result_var=f"{layer_name}_activation",
+                level=level - 1,
+                metadata={
+                    'operation': 'polynomial_activation',
+                    'layer': layer_name,
+                    'layer_type': layer_type
+                }
+            ))
+        
+        return operations
+    
+    def _get_generic_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for generic/unknown layer types.
+        """
+        return []
+    
+    def _extract_from_operation_list(self, operations: List[Any]) -> List[FHEOperation]:
+        """
+        Extract operations from a list of operation objects or dictionaries.
+        """
+        fhe_operations = []
+        
+        for op in operations:
+            if isinstance(op, FHEOperation):
+                fhe_operations.append(op)
+            elif isinstance(op, dict):
+                fhe_op = self._dict_to_fhe_operation(op)
+                if fhe_op:
+                    fhe_operations.append(fhe_op)
             else:
-                return []
+                fhe_op = self._object_to_fhe_operation(op)
+                if fhe_op:
+                    fhe_operations.append(fhe_op)
         
-        elif isinstance(source, list):
-            # Convert list of dicts to FHE operations
-            operations = []
-            for item in source:
-                if isinstance(item, FHEOperation):
-                    operations.append(item)
-                elif isinstance(item, dict):
-                    op = FHEOperation(
-                        op_type=item.get('op_type', 'unknown'),
-                        method_name=item.get('method_name', item.get('op_type', 'unknown')),
-                        args=item.get('args', []),
-                        kwargs=item.get('kwargs', {}),
-                        result_var=item.get('result_var'),
-                        level=item.get('level'),
-                        metadata=item.get('metadata', {})
-                    )
-                    operations.append(op)
-            return operations
-        
-        else:
-            # Default: return simple test operations
-            return self.create_simple_test_operations()
+        return fhe_operations
     
-    def extract_scheme_parameters(self, source: Any) -> SchemeParameters:
-        """Extract scheme parameters from source."""
+    def _dict_to_fhe_operation(self, op_dict: Dict[str, Any]) -> Optional[FHEOperation]:
+        """Convert a dictionary to an FHEOperation."""
+        try:
+            return FHEOperation(
+                op_type=op_dict.get('op_type', 'unknown'),
+                method_name=op_dict.get('method_name', op_dict.get('op_type', 'unknown')),
+                args=op_dict.get('args', []),
+                kwargs=op_dict.get('kwargs', {}),
+                result_var=op_dict.get('result_var'),
+                level=op_dict.get('level'),
+                metadata=op_dict.get('metadata', {})
+            )
+        except Exception:
+            return None
+    
+    def _object_to_fhe_operation(self, op_obj: Any) -> Optional[FHEOperation]:
+        """Convert an object to an FHEOperation."""
+        if not hasattr(op_obj, 'op_type'):
+            return None
+            
+        try:
+            return FHEOperation(
+                op_type=getattr(op_obj, 'op_type', 'unknown'),
+                method_name=getattr(op_obj, 'method_name', getattr(op_obj, 'op_type', 'unknown')),
+                args=getattr(op_obj, 'args', []),
+                kwargs=getattr(op_obj, 'kwargs', {}),
+                result_var=getattr(op_obj, 'result_var', None),
+                level=getattr(op_obj, 'level', None),
+                metadata=getattr(op_obj, 'metadata', {})
+            )
+        except Exception:
+            return None
+    
+    def get_supported_operations(self) -> List[str]:
+        """Get list of all CKKS operations supported by this frontend."""
+        return list(self._supported_operations.keys())
+    
+    def get_operation_info(self, op_type: str) -> Optional[Dict[str, Any]]:
+        """Get detailed information about a specific operation type."""
+        return self._supported_operations.get(op_type)
+    
+    def extract_scheme_parameters(self, source: Union[str, Path, Dict[str, Any], Any]) -> SchemeParameters:
+        """
+        Extract scheme parameters from various sources.
+        
+        Args:
+            source: Configuration file path, dict, or Orion scheme object
+            
+        Returns:
+            OrionSchemeParameters object
+        """
         if isinstance(source, (str, Path)):
-            # Config file path
-            return self._load_scheme_from_config(source)
+            return self._load_scheme_from_config(Path(source))
         elif isinstance(source, dict):
-            # Config dictionary
             return self._create_scheme_from_config(source)
-        elif hasattr(source, 'logN'):
-            # Orion scheme object
-            return self._create_scheme_from_orion(source)
+        elif hasattr(source, 'logN') or hasattr(source, 'params'):
+            return self._create_scheme_from_orion_object(source)
         else:
-            # Use default parameters
             return self._create_default_scheme()
     
     def _load_scheme_from_config(self, config_path: Path) -> OrionSchemeParameters:
-        """Load scheme parameters from YAML config file."""
+        """Load scheme parameters from YAML configuration file."""
+        if not config_path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+            
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
+            
         return self._create_scheme_from_config(config)
     
     def _create_scheme_from_config(self, config: Dict[str, Any]) -> OrionSchemeParameters:
-        """Create scheme parameters from config dictionary."""
+        """Create scheme parameters from configuration dictionary."""
         ckks_params = config.get('ckks_params', {})
         orion_params = config.get('orion', {})
         
@@ -264,20 +533,32 @@ class OrionFrontend(FrontendInterface):
             backend=orion_params.get('backend', 'lattigo')
         )
     
-    def _create_scheme_from_orion(self, orion_scheme: Any) -> OrionSchemeParameters:
+    def _create_scheme_from_orion_object(self, orion_obj: Any) -> OrionSchemeParameters:
         """Create scheme parameters from Orion scheme object."""
-        return OrionSchemeParameters(
-            logN=getattr(orion_scheme, 'logN', 13),
-            logQ=getattr(orion_scheme, 'logQ', [55, 45, 45, 55]),
-            logP=getattr(orion_scheme, 'logP', [55]),
-            logScale=getattr(orion_scheme, 'logScale', 45),
-            slots=getattr(orion_scheme, 'slots', 2**12),
-            ring_degree=getattr(orion_scheme, 'ring_degree', 2**13),
-            backend=getattr(orion_scheme, 'backend', 'lattigo')
-        )
+        if hasattr(orion_obj, 'params'):
+            params = orion_obj.params
+            return OrionSchemeParameters(
+                logN=getattr(params, 'logN', 13),
+                logQ=getattr(params, 'logQ', [55, 45, 45, 55]),
+                logP=getattr(params, 'logP', [55]),
+                logScale=getattr(params, 'logScale', 45),
+                slots=getattr(params, 'slots', 2**12),
+                ring_degree=getattr(params, 'ring_degree', 2**13),
+                backend=getattr(params, 'backend', 'lattigo')
+            )
+        else:
+            return OrionSchemeParameters(
+                logN=getattr(orion_obj, 'logN', 13),
+                logQ=getattr(orion_obj, 'logQ', [55, 45, 45, 55]),
+                logP=getattr(orion_obj, 'logP', [55]),
+                logScale=getattr(orion_obj, 'logScale', 45),
+                slots=getattr(orion_obj, 'slots', 2**12),
+                ring_degree=getattr(orion_obj, 'ring_degree', 2**13),
+                backend=getattr(orion_obj, 'backend', 'lattigo')
+            )
     
     def _create_default_scheme(self) -> OrionSchemeParameters:
-        """Create default Orion scheme parameters."""
+        """Create default scheme parameters for testing."""
         return OrionSchemeParameters(
             logN=13,
             logQ=[55, 45, 45, 55],
@@ -292,40 +573,3 @@ class OrionFrontend(FrontendInterface):
 def create_orion_frontend() -> OrionFrontend:
     """Factory function to create an Orion frontend."""
     return OrionFrontend()
-
-
-def list_orion_operations():
-    """List all operations that Orion supports."""
-    frontend = OrionFrontend()
-    
-    print("Orion Supported Operations:")
-    print("=" * 40)
-    
-    for op_type in frontend.get_supported_operations():
-        info = frontend.get_operation_info(op_type)
-        print(f"{op_type:12} - {info['description']}")
-        print(f"{'':12}   Operands: {info['operands']}, Level change: {info['level_change']}")
-    
-    print(f"\n✅ All operations are first-class CKKS operations")
-    print(f"✅ matmul will be lowered by a separate pass")
-    print(f"✅ No templates or abstractions needed")
-
-
-if __name__ == "__main__":
-    # Demo the clean frontend
-    print("🚀 Clean Orion Frontend Demo")
-    print("=" * 40)
-    
-    list_orion_operations()
-    
-    frontend = OrionFrontend()
-    
-    print(f"\n📊 Testing simple operations:")
-    test_ops = frontend.create_simple_test_operations()
-    print(f"Generated {len(test_ops)} operations:")
-    for op in test_ops:
-        print(f"  • {op.op_type} -> {op.result_var}")
-    
-    print(f"\n✅ Frontend is now minimal and clean!")
-    print(f"✅ No complex abstractions or templates!")
-    print(f"✅ Just pure CKKS operations + matmul!")

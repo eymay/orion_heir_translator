@@ -352,26 +352,28 @@ class ExtractOp(IRDLOperation):
     assembly_format = "$input `,` $offset attr-dict `:` `(` type($input) `,` type($offset) `)` `->` type($result)"
 
 
+
 @irdl_op_definition
-class MatMulOp(IRDLOperation):
+class LinearTransformOp(IRDLOperation):
     """
-    Matrix multiplication operation for CKKS.
+    Linear transformation operation for CKKS using precomputed diagonals.
     
-    High-level operation that represents linear transformation / matrix multiplication.
-    This will be lowered to primitive CKKS operations by a separate pass.
+    This represents Orion's diagonal-based linear transformation, which is
+    conceptually equivalent to matrix multiplication but uses precomputed
+    diagonal encodings for efficiency.
 
-    Example: %result = ckks.matmul %input, %weight : (!ct, !pt) -> !ct
+    Example: %result = ckks.linear_transform %input : !ct -> !ct
     """
 
-    name = "ckks.matmul"
+    name = "ckks.linear_transform"
 
     input = operand_def(NewLWECiphertextType)
-    weight = operand_def(NewLWEPlaintextType)
     result = result_def(NewLWECiphertextType)
 
     traits = traits_def(Pure())
 
-    assembly_format = "$input `,` $weight attr-dict `:` `(` type($input) `,` type($weight) `)` `->` type($result)"
+    assembly_format = "$input attr-dict `:` type($input) `->` type($result)"
+
 
 
 CKKS = Dialect(
@@ -388,7 +390,7 @@ CKKS = Dialect(
         RescaleOp,
         RotateOp,
         ExtractOp,
-        MatMulOp
+        LinearTransformOp,
     ],
     [
         SchemeParamAttr,
