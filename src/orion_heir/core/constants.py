@@ -113,15 +113,32 @@ class ConstantManager:
         
         This encodes a constant tensor into the LWE plaintext space.
         """
-        from ..dialects.lwe import RLWEEncodeOp
+        from ..dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
+        from ..dialects.polynomial import RingAttr, PolynomialAttr
+        from xdsl.dialects.builtin import f32, IntegerAttr, IntegerType
         
         # Get the plaintext type
         pt_type = self.type_builder.get_default_plaintext_type()
         
-        # Create encoding operation
+        # Create encoding attribute
+        encoding_attr = InverseCanonicalEncodingAttr([
+            IntegerAttr(40, IntegerType(32))  # Default scale
+        ])
+        
+        # Create ring attribute
+        poly_attr = PolynomialAttr([
+            constant_value.type  # Use the tensor type
+        ])
+        ring_attr = RingAttr([f32, poly_attr])
+        
+        # Create encoding operation with required attributes
         encode_op = RLWEEncodeOp(
             operands=[constant_value],
-            result_types=[pt_type]
+            result_types=[pt_type],
+            attributes={
+                "encoding": encoding_attr,
+                "ring": ring_attr
+            }
         )
         
         block.add_op(encode_op)

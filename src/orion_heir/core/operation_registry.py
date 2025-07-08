@@ -205,6 +205,47 @@ class LWEEncodingHandler(BaseOperationHandler):
         
         return current_value
 
+class CKKSMatMulHandler(BaseOperationHandler):
+    """Handler for CKKS matrix multiplication operations."""
+    
+    def handle(self, 
+              operation: FHEOperation,
+              current_value: SSAValue,
+              block: Block,
+              constants: Dict[str, SSAValue],
+              type_builder: Any) -> SSAValue:
+        """Handle CKKS matrix multiplication operations."""
+        from ..dialects.ckks import MatMulOp
+        
+        print(f"🔧 MatMul handler: Looking for weight operand")
+        print(f"    Available constants: {list(constants.keys())}")
+        print(f"    Operation metadata: {operation.metadata}")
+        
+        # Get weight operand - look for the plaintext input mentioned in metadata
+        weight = None
+        if operation.metadata and 'plaintext_input' in operation.metadata:
+            weight_key = operation.metadata['plaintext_input']
+            weight = constants.get(weight_key)
+            print(f"    Looking for weight with key: {weight_key}")
+        
+        if weight is None:
+            print(f"❌ No weight operand found for matmul")
+            return current_value
+        
+        print(f"✅ Found weight operand, creating matmul operation")
+        
+        # Determine result type (for now, same as input)
+        result_type = current_value.type
+        
+        # Create the matmul operation
+        matmul_op = MatMulOp(
+            operands=[current_value, weight],
+            result_types=[result_type]
+        )
+        
+        block.add_op(matmul_op)
+        print(f"✅ Created ckks.matmul operation")
+        return matmul_op.results[0]
 
 class OperationRegistry:
     """
@@ -239,7 +280,7 @@ class OperationRegistry:
         self.handlers['encode'] = LWEEncodingHandler()
         
         # Linear transform operations (decomposed to rotations)
-        self.handlers['linear_transform'] = LinearTransformHandler()
+        self.handlers['matmul'] = CKKSMatMulHandler()
     
     def register_operation(self, op_type: str, handler: OperationHandler):
         """Register a custom operation handler."""

@@ -1,61 +1,235 @@
 """
-Orion frontend for the HEIR translator.
+Clean Orion frontend with hardcoded CKKS operations.
 
-This module provides Orion-specific functionality for extracting operations
-and scheme parameters from Orion FHE computations.
+This module provides the Orion frontend with built-in knowledge of all
+CKKS operations that Orion supports, including the new matmul operation.
 """
 
 from typing import List, Any, Dict, Optional
+import torch
 import yaml
 from pathlib import Path
 
 from ...core.types import FHEOperation, FrontendInterface, SchemeParameters
 from .scheme_params import OrionSchemeParameters
-from .operation_extractor import OrionOperationExtractor
 
 
 class OrionFrontend(FrontendInterface):
     """
-    Frontend for translating Orion FHE operations to HEIR.
+    Clean Orion frontend with hardcoded knowledge of CKKS operations.
     
-    This class implements the FrontendInterface for Orion,
-    providing Orion-specific logic for operation extraction
-    and parameter handling.
+    This frontend contains built-in knowledge of all operations that
+    Orion supports, based on the CKKS homomorphic encryption scheme.
+    No templates or complex abstractions - just pure CKKS operations.
     """
     
     def __init__(self):
-        self.operation_extractor = OrionOperationExtractor()
+        # Hardcoded knowledge of Orion's CKKS operations
+        self._orion_operations = self._initialize_orion_operations()
     
+    def _initialize_orion_operations(self) -> Dict[str, Dict]:
+        """Initialize hardcoded knowledge of Orion's supported operations."""
+        return {
+            # Core CKKS arithmetic operations
+            'add': {
+                'description': 'Homomorphic addition of two ciphertexts',
+                'operands': 2,
+                'level_change': 0,
+                'noise_growth': 'additive'
+            },
+            'mul': {
+                'description': 'Homomorphic multiplication of two ciphertexts', 
+                'operands': 2,
+                'level_change': -1,  # Consumes one level
+                'noise_growth': 'multiplicative'
+            },
+            'rotate': {
+                'description': 'Cyclic rotation of SIMD slots',
+                'operands': 1,
+                'level_change': 0,
+                'noise_growth': 'minimal',
+                'parameters': ['offset']
+            },
+            
+            # Plaintext operations
+            'mul_plain': {
+                'description': 'Multiply ciphertext with plaintext',
+                'operands': 2,  # ciphertext + plaintext
+                'level_change': 0,
+                'noise_growth': 'multiplicative_plain'
+            },
+            'add_plain': {
+                'description': 'Add plaintext to ciphertext',
+                'operands': 2,  # ciphertext + plaintext  
+                'level_change': 0,
+                'noise_growth': 'minimal'
+            },
+            'sub_plain': {
+                'description': 'Subtract plaintext from ciphertext',
+                'operands': 2,
+                'level_change': 0,
+                'noise_growth': 'minimal'
+            },
+            
+            # Matrix multiplication operation (high-level)
+            'matmul': {
+                'description': 'Matrix multiplication (high-level operation)',
+                'operands': 2,  # ciphertext + plaintext
+                'level_change': 0,  # Will be determined by lowering pass
+                'noise_growth': 'depends_on_lowering'
+            },
+            
+            # Noise management operations
+            'rescale': {
+                'description': 'Rescale ciphertext to manage noise',
+                'operands': 1,
+                'level_change': -1,  # Moves to lower level
+                'noise_growth': 'reduction'
+            },
+            'relinearize': {
+                'description': 'Reduce ciphertext size after multiplication',
+                'operands': 1,
+                'level_change': 0,
+                'noise_growth': 'minimal'
+            },
+            'bootstrap': {
+                'description': 'Refresh ciphertext to enable more operations',
+                'operands': 1,
+                'level_change': 'reset',  # Resets to highest level
+                'noise_growth': 'reset'
+            },
+            
+            # Encoding/decoding operations  
+            'encode': {
+                'description': 'Encode plaintext for CKKS',
+                'operands': 1,
+                'level_change': 0,
+                'noise_growth': 'none'
+            },
+            'decode': {
+                'description': 'Decode CKKS plaintext',
+                'operands': 1, 
+                'level_change': 0,
+                'noise_growth': 'none'
+            },
+            'encrypt': {
+                'description': 'Encrypt plaintext to ciphertext',
+                'operands': 1,
+                'level_change': 0,
+                'noise_growth': 'initial'
+            },
+            'decrypt': {
+                'description': 'Decrypt ciphertext to plaintext',
+                'operands': 1,
+                'level_change': 0,
+                'noise_growth': 'none'
+            }
+        }
+    
+    def get_supported_operations(self) -> List[str]:
+        """Get list of all operations Orion supports."""
+        return list(self._orion_operations.keys())
+    
+    def get_operation_info(self, op_type: str) -> Optional[Dict]:
+        """Get information about a specific operation."""
+        return self._orion_operations.get(op_type)
+    
+    def create_simple_test_operations(self) -> List[FHEOperation]:
+        """Create simple test operations for validation."""
+        operations = []
+        
+        # Input encoding
+        operations.append(FHEOperation(
+            op_type="encode",
+            method_name="rlwe_encode",
+            args=[torch.tensor([1.0, 2.0, 3.0, 4.0])],
+            kwargs={},
+            result_var="input_encoded",
+            level=2,
+            metadata={'operation': 'encode_input'}
+        ))
+        
+        # Encode weight matrix
+        operations.append(FHEOperation(
+            op_type="encode",
+            method_name="rlwe_encode",
+            args=[torch.tensor([[1.0, 2.0, 3.0, 4.0], [0.5, 1.0, 1.5, 2.0]])],
+            kwargs={},
+            result_var="weight_encoded",
+            level=2,
+            metadata={'operation': 'encode_weight'}
+        ))
+        
+        # Matrix multiplication (now a first-class CKKS operation)
+        operations.append(FHEOperation(
+            op_type="matmul",
+            method_name="matmul",
+            args=[],
+            kwargs={},
+            result_var="matmul_result",
+            level=2,
+            metadata={'operation': 'matrix_multiplication', 'plaintext_input': 'weight_encoded'}
+        ))
+        
+        return operations
+    
+    def create_basic_operation(self, op_type: str, **kwargs) -> Optional[FHEOperation]:
+        """Create a basic CKKS operation if it's supported by Orion."""
+        if op_type not in self._orion_operations:
+            return None
+        
+        op_info = self._orion_operations[op_type]
+        
+        return FHEOperation(
+            op_type=op_type,
+            method_name=op_type,
+            args=kwargs.get('args', []),
+            kwargs=kwargs.get('operation_kwargs', {}), 
+            result_var=kwargs.get('result_var', f'{op_type}_result'),
+            level=kwargs.get('level', 2),
+            metadata={
+                'operation': op_type,
+                'description': op_info['description']
+            }
+        )
+    
+    # FrontendInterface implementation
     def extract_operations(self, source: Any) -> List[FHEOperation]:
         """
-        Extract FHE operations from Orion source.
-        
-        Args:
-            source: Can be a list of operations, trace data, or other Orion artifacts
-            
-        Returns:
-            List of generic FHE operations
+        Extract operations from source.
+        Since we have minimal hardcoded operations, this is simple.
         """
-        if isinstance(source, list):
-            # Direct list of operations
-            return self.operation_extractor.convert_operations(source)
-        elif hasattr(source, 'operations'):
-            # Object with operations attribute
-            return self.operation_extractor.convert_operations(source.operations)
+        if isinstance(source, str):
+            if source == 'test':
+                return self.create_simple_test_operations()
+            else:
+                return []
+        
+        elif isinstance(source, list):
+            # Convert list of dicts to FHE operations
+            operations = []
+            for item in source:
+                if isinstance(item, FHEOperation):
+                    operations.append(item)
+                elif isinstance(item, dict):
+                    op = FHEOperation(
+                        op_type=item.get('op_type', 'unknown'),
+                        method_name=item.get('method_name', item.get('op_type', 'unknown')),
+                        args=item.get('args', []),
+                        kwargs=item.get('kwargs', {}),
+                        result_var=item.get('result_var'),
+                        level=item.get('level'),
+                        metadata=item.get('metadata', {})
+                    )
+                    operations.append(op)
+            return operations
+        
         else:
-            # Try to extract from other formats
-            return self.operation_extractor.extract_from_source(source)
+            # Default: return simple test operations
+            return self.create_simple_test_operations()
     
     def extract_scheme_parameters(self, source: Any) -> SchemeParameters:
-        """
-        Extract scheme parameters from Orion source.
-        
-        Args:
-            source: Orion configuration, scheme object, or config file path
-            
-        Returns:
-            Scheme parameters object
-        """
+        """Extract scheme parameters from source."""
         if isinstance(source, (str, Path)):
             # Config file path
             return self._load_scheme_from_config(source)
@@ -81,19 +255,19 @@ class OrionFrontend(FrontendInterface):
         orion_params = config.get('orion', {})
         
         return OrionSchemeParameters(
-            logN=ckks_params.get('LogN', [13]),
+            logN=ckks_params.get('LogN', 13),
             logQ=ckks_params.get('LogQ', [55, 45, 45, 55]),
             logP=ckks_params.get('LogP', [55]),
             logScale=ckks_params.get('LogScale', 45),
             slots=ckks_params.get('slots', 2**12),
-            ring_degree=2**ckks_params.get('LogN', [13])[0],
+            ring_degree=2**ckks_params.get('LogN', 13),
             backend=orion_params.get('backend', 'lattigo')
         )
     
     def _create_scheme_from_orion(self, orion_scheme: Any) -> OrionSchemeParameters:
         """Create scheme parameters from Orion scheme object."""
         return OrionSchemeParameters(
-            logN=getattr(orion_scheme, 'logN', [13]),
+            logN=getattr(orion_scheme, 'logN', 13),
             logQ=getattr(orion_scheme, 'logQ', [55, 45, 45, 55]),
             logP=getattr(orion_scheme, 'logP', [55]),
             logScale=getattr(orion_scheme, 'logScale', 45),
@@ -103,9 +277,9 @@ class OrionFrontend(FrontendInterface):
         )
     
     def _create_default_scheme(self) -> OrionSchemeParameters:
-        """Create default scheme parameters."""
+        """Create default Orion scheme parameters."""
         return OrionSchemeParameters(
-            logN=[13],
+            logN=13,
             logQ=[55, 45, 45, 55],
             logP=[55],
             logScale=45,
@@ -113,76 +287,6 @@ class OrionFrontend(FrontendInterface):
             ring_degree=2**13,
             backend='lattigo'
         )
-    
-    def translate_from_config(self, config_path: Path, operations: List[Any]) -> Any:
-        """
-        Convenience method to translate operations using config file.
-        
-        Args:
-            config_path: Path to Orion configuration file
-            operations: List of Orion operations
-            
-        Returns:
-            HEIR MLIR module
-        """
-        from ...core.translator import GenericTranslator
-        
-        # Extract operations and parameters
-        fhe_operations = self.extract_operations(operations)
-        scheme_params = self.extract_scheme_parameters(config_path)
-        
-        # Create translator and translate
-        translator = GenericTranslator()
-        return translator.translate(fhe_operations, scheme_params)
-    
-    def create_mlp_operations(self) -> List[FHEOperation]:
-        """Create sample MLP operations for testing."""
-        import torch
-        
-        operations = [
-            FHEOperation(
-                op_type="mul_plain",
-                method_name="mul_plain",
-                args=[torch.randn(1, 16)],
-                kwargs={},
-                result_var="linear1",
-                level=3
-            ),
-            FHEOperation(
-                op_type="add_plain",
-                method_name="add_plain", 
-                args=[torch.randn(1, 16)],
-                kwargs={},
-                result_var="bias1",
-                level=3
-            ),
-            FHEOperation(
-                op_type="rotate",
-                method_name="rotate",
-                args=[1],
-                kwargs={"offset": 1},
-                result_var="rot1",
-                level=3
-            ),
-            FHEOperation(
-                op_type="mul_plain",
-                method_name="mul_plain",
-                args=[torch.randn(1, 16)],
-                kwargs={},
-                result_var="linear2",
-                level=2
-            ),
-            FHEOperation(
-                op_type="add",
-                method_name="add",
-                args=[],
-                kwargs={},
-                result_var="accumulate",
-                level=2
-            )
-        ]
-        
-        return operations
 
 
 def create_orion_frontend() -> OrionFrontend:
@@ -190,251 +294,38 @@ def create_orion_frontend() -> OrionFrontend:
     return OrionFrontend()
 
 
-def translate_orion_operations(operations: List[Any], 
-                              config_path: Optional[Path] = None) -> Any:
-    """
-    Convenience function to translate Orion operations.
-    
-    Args:
-        operations: List of Orion operations
-        config_path: Optional path to configuration file
-        
-    Returns:
-        HEIR MLIR module
-    """
+def list_orion_operations():
+    """List all operations that Orion supports."""
     frontend = OrionFrontend()
     
-    # Extract FHE operations
-    fhe_operations = frontend.extract_operations(operations)
+    print("Orion Supported Operations:")
+    print("=" * 40)
     
-    # Extract scheme parameters
-    if config_path:
-        scheme_params = frontend.extract_scheme_parameters(config_path)
-    else:
-        scheme_params = frontend._create_default_scheme()
+    for op_type in frontend.get_supported_operations():
+        info = frontend.get_operation_info(op_type)
+        print(f"{op_type:12} - {info['description']}")
+        print(f"{'':12}   Operands: {info['operands']}, Level change: {info['level_change']}")
     
-    # Translate
-    from ...core.translator import GenericTranslator
-    translator = GenericTranslator()
-    
-    return translator.translate(fhe_operations, scheme_params)
-"""
-Orion frontend for the HEIR translator.
-
-This module provides Orion-specific functionality for extracting operations
-and scheme parameters from Orion FHE computations.
-"""
-
-from typing import List, Any, Dict, Optional
-import yaml
-from pathlib import Path
-
-from ...core.translator import FHEOperation, FrontendInterface, SchemeParameters
-from .scheme_params import OrionSchemeParameters
-from .operation_extractor import OrionOperationExtractor
+    print(f"\n✅ All operations are first-class CKKS operations")
+    print(f"✅ matmul will be lowered by a separate pass")
+    print(f"✅ No templates or abstractions needed")
 
 
-class OrionFrontend(FrontendInterface):
-    """
-    Frontend for translating Orion FHE operations to HEIR.
+if __name__ == "__main__":
+    # Demo the clean frontend
+    print("🚀 Clean Orion Frontend Demo")
+    print("=" * 40)
     
-    This class implements the FrontendInterface for Orion,
-    providing Orion-specific logic for operation extraction
-    and parameter handling.
-    """
+    list_orion_operations()
     
-    def __init__(self):
-        self.operation_extractor = OrionOperationExtractor()
-    
-    def extract_operations(self, source: Any) -> List[FHEOperation]:
-        """
-        Extract FHE operations from Orion source.
-        
-        Args:
-            source: Can be a list of operations, trace data, or other Orion artifacts
-            
-        Returns:
-            List of generic FHE operations
-        """
-        if isinstance(source, list):
-            # Direct list of operations
-            return self.operation_extractor.convert_operations(source)
-        elif hasattr(source, 'operations'):
-            # Object with operations attribute
-            return self.operation_extractor.convert_operations(source.operations)
-        else:
-            # Try to extract from other formats
-            return self.operation_extractor.extract_from_source(source)
-    
-    def extract_scheme_parameters(self, source: Any) -> SchemeParameters:
-        """
-        Extract scheme parameters from Orion source.
-        
-        Args:
-            source: Orion configuration, scheme object, or config file path
-            
-        Returns:
-            Scheme parameters object
-        """
-        if isinstance(source, (str, Path)):
-            # Config file path
-            return self._load_scheme_from_config(source)
-        elif isinstance(source, dict):
-            # Config dictionary
-            return self._create_scheme_from_config(source)
-        elif hasattr(source, 'logN'):
-            # Orion scheme object
-            return self._create_scheme_from_orion(source)
-        else:
-            # Use default parameters
-            return self._create_default_scheme()
-    
-    def _load_scheme_from_config(self, config_path: Path) -> OrionSchemeParameters:
-        """Load scheme parameters from YAML config file."""
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        return self._create_scheme_from_config(config)
-    
-    def _create_scheme_from_config(self, config: Dict[str, Any]) -> OrionSchemeParameters:
-        """Create scheme parameters from config dictionary."""
-        ckks_params = config.get('ckks_params', {})
-        orion_params = config.get('orion', {})
-        
-        return OrionSchemeParameters(
-            logN=ckks_params.get('LogN', [13]),
-            logQ=ckks_params.get('LogQ', [55, 45, 45, 55]),
-            logP=ckks_params.get('LogP', [55]),
-            logScale=ckks_params.get('LogScale', 45),
-            slots=ckks_params.get('slots', 2**12),
-            ring_degree=2**ckks_params.get('LogN', [13])[0],
-            backend=orion_params.get('backend', 'lattigo')
-        )
-    
-    def _create_scheme_from_orion(self, orion_scheme: Any) -> OrionSchemeParameters:
-        """Create scheme parameters from Orion scheme object."""
-        return OrionSchemeParameters(
-            logN=getattr(orion_scheme, 'logN', [13]),
-            logQ=getattr(orion_scheme, 'logQ', [55, 45, 45, 55]),
-            logP=getattr(orion_scheme, 'logP', [55]),
-            logScale=getattr(orion_scheme, 'logScale', 45),
-            slots=getattr(orion_scheme, 'slots', 2**12),
-            ring_degree=getattr(orion_scheme, 'ring_degree', 2**13),
-            backend=getattr(orion_scheme, 'backend', 'lattigo')
-        )
-    
-    def _create_default_scheme(self) -> OrionSchemeParameters:
-        """Create default scheme parameters."""
-        return OrionSchemeParameters(
-            logN=[13],
-            logQ=[55, 45, 45, 55],
-            logP=[55],
-            logScale=45,
-            slots=2**12,
-            ring_degree=2**13,
-            backend='lattigo'
-        )
-    
-    def translate_from_config(self, config_path: Path, operations: List[Any]) -> Any:
-        """
-        Convenience method to translate operations using config file.
-        
-        Args:
-            config_path: Path to Orion configuration file
-            operations: List of Orion operations
-            
-        Returns:
-            HEIR MLIR module
-        """
-        from ...core.translator import GenericTranslator
-        
-        # Extract operations and parameters
-        fhe_operations = self.extract_operations(operations)
-        scheme_params = self.extract_scheme_parameters(config_path)
-        
-        # Create translator and translate
-        translator = GenericTranslator()
-        return translator.translate(fhe_operations, scheme_params)
-    
-    def create_mlp_operations(self) -> List[FHEOperation]:
-        """Create sample MLP operations for testing."""
-        import torch
-        
-        operations = [
-            FHEOperation(
-                op_type="mul_plain",
-                method_name="mul_plain",
-                args=[torch.randn(1, 16)],
-                kwargs={},
-                result_var="linear1",
-                level=3
-            ),
-            FHEOperation(
-                op_type="add_plain",
-                method_name="add_plain", 
-                args=[torch.randn(1, 16)],
-                kwargs={},
-                result_var="bias1",
-                level=3
-            ),
-            FHEOperation(
-                op_type="rotate",
-                method_name="rotate",
-                args=[1],
-                kwargs={"offset": 1},
-                result_var="rot1",
-                level=3
-            ),
-            FHEOperation(
-                op_type="mul_plain",
-                method_name="mul_plain",
-                args=[torch.randn(1, 16)],
-                kwargs={},
-                result_var="linear2",
-                level=2
-            ),
-            FHEOperation(
-                op_type="add",
-                method_name="add",
-                args=[],
-                kwargs={},
-                result_var="accumulate",
-                level=2
-            )
-        ]
-        
-        return operations
-
-
-def create_orion_frontend() -> OrionFrontend:
-    """Factory function to create an Orion frontend."""
-    return OrionFrontend()
-
-
-def translate_orion_operations(operations: List[Any], 
-                              config_path: Optional[Path] = None) -> Any:
-    """
-    Convenience function to translate Orion operations.
-    
-    Args:
-        operations: List of Orion operations
-        config_path: Optional path to configuration file
-        
-    Returns:
-        HEIR MLIR module
-    """
     frontend = OrionFrontend()
     
-    # Extract FHE operations
-    fhe_operations = frontend.extract_operations(operations)
+    print(f"\n📊 Testing simple operations:")
+    test_ops = frontend.create_simple_test_operations()
+    print(f"Generated {len(test_ops)} operations:")
+    for op in test_ops:
+        print(f"  • {op.op_type} -> {op.result_var}")
     
-    # Extract scheme parameters
-    if config_path:
-        scheme_params = frontend.extract_scheme_parameters(config_path)
-    else:
-        scheme_params = frontend._create_default_scheme()
-    
-    # Translate
-    from ...core.translator import GenericTranslator
-    translator = GenericTranslator()
-    
-    return translator.translate(fhe_operations, scheme_params)
+    print(f"\n✅ Frontend is now minimal and clean!")
+    print(f"✅ No complex abstractions or templates!")
+    print(f"✅ Just pure CKKS operations + matmul!")

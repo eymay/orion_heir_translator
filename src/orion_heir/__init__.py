@@ -12,6 +12,18 @@ from .core.types import FHEOperation
 from .frontends.orion.orion_frontend import OrionFrontend
 from .frontends.orion.scheme_params import OrionSchemeParameters
 
+# Import CKKS interpreter components
+try:
+    from .ckks_interpreter import (
+        CKKSDialectInterpreter,
+        CKKSValidationFramework,
+        OrionHeirValidationPipeline,
+        ValidationReport
+    )
+    _CKKS_INTERPRETER_AVAILABLE = True
+except ImportError:
+    _CKKS_INTERPRETER_AVAILABLE = False
+
 __all__ = [
     'GenericTranslator',
     'FHEOperation', 
@@ -19,3 +31,12 @@ __all__ = [
     'OrionFrontend',
     'OrionSchemeParameters',
 ]
+
+# Add CKKS interpreter exports if available
+if _CKKS_INTERPRETER_AVAILABLE:
+    __all__.extend([
+        'CKKSDialectInterpreter',
+        'CKKSValidationFramework', 
+        'OrionHeirValidationPipeline',
+        'ValidationReport'
+    ])
