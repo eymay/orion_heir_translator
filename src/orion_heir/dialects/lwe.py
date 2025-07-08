@@ -25,11 +25,12 @@ from xdsl.irdl import (
     traits_def,
 )
 from xdsl.parser import Parser
+from .declarative_parser import parse_parameters_declarative, create_field_specs, FieldType, FieldSpec
 from xdsl.printer import Printer
 from xdsl.traits import Pure
-
+from xdsl.utils.exceptions import ParseError
 # Import our custom dialects
-from .polynomial import RingAttr
+from .polynomial import RingAttr, PolynomialAttr
 
 
 @irdl_attr_definition
@@ -123,25 +124,14 @@ class ModulusChainAttr(ParametrizedAttribute):
 
     @classmethod
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
-        """Parse elements array and current index."""
-        parser.parse_punctuation("<")
+        """Parse modulus chain parameters declaratively."""
         
-        # Parse "elements = <...>"
-        parser.parse_keyword("elements")
-        parser.parse_punctuation("=")
-        elements_attr = parser.parse_attribute()
+        field_specs = create_field_specs(
+            elements=(FieldType.ARRAY_OF_INTEGERS, True),
+            current=(FieldType.INTEGER, True)
+        )
         
-        parser.parse_punctuation(",")
-        
-        # Parse "current = value"
-        parser.parse_keyword("current")
-        parser.parse_punctuation("=")
-        current_value = parser.parse_integer()
-        current_attr = IntegerAttr.from_int_and_width(current_value, 64)
-        
-        parser.parse_punctuation(">")
-        
-        return [elements_attr, current_attr]
+        return parse_parameters_declarative(parser, field_specs)
 
     def print_parameters(self, printer: Printer) -> None:
         """Print in HEIR-compatible format with square brackets."""
@@ -171,24 +161,20 @@ class PlaintextSpaceAttr(ParametrizedAttribute):
 
     @classmethod
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
-        """Parse ring and encoding parameters."""
-        parser.parse_punctuation("<")
+        """Parse ring and encoding parameters declaratively."""
         
-        # Parse "ring = ring_attr"
-        parser.parse_keyword("ring")
-        parser.parse_punctuation("=")
-        ring_attr = parser.parse_attribute()
+        # Import here to avoid circular imports
+        from .polynomial import RingAttr
         
-        parser.parse_punctuation(",")
+        field_specs = create_field_specs(
+            ring=(FieldType.FLEXIBLE_ATTRIBUTE, True, RingAttr),
+            encoding=(FieldType.ATTRIBUTE, True)
+        )
         
-        # Parse "encoding = encoding_attr"
-        parser.parse_keyword("encoding")
-        parser.parse_punctuation("=")
-        encoding_attr = parser.parse_attribute()
-        
-        parser.parse_punctuation(">")
-        
-        return [ring_attr, encoding_attr]
+        return parse_parameters_declarative(parser, field_specs)
+
+
+
 
     def print_parameters(self, printer: Printer) -> None:
         """Print ring and encoding parameters."""
@@ -217,31 +203,19 @@ class CiphertextSpaceAttr(ParametrizedAttribute):
 
     @classmethod
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
-        parser.parse_punctuation("<")
+        """Parse ring, encryption_type, and size parameters declaratively."""
         
-        # Parse "ring = ring_attr"
-        parser.parse_keyword("ring")
-        parser.parse_punctuation("=")
-        ring_attr = parser.parse_attribute()
+        from .polynomial import RingAttr
         
-        parser.parse_punctuation(",")
+        field_specs = create_field_specs(
+            ring=(FieldType.FLEXIBLE_ATTRIBUTE, True, RingAttr),
+            encryption_type=(FieldType.IDENTIFIER, True),
+            size=(FieldType.INTEGER, False, 2)  # Optional with default value 2
+        )
         
-        # Parse "encryption_type = type"
-        parser.parse_keyword("encryption_type")
-        parser.parse_punctuation("=")
-        encryption_type_str = parser.parse_identifier()
-        encryption_type_attr = StringAttr(encryption_type_str)
-        
-        # Size parameter is optional (defaults to 2)
-        size_attr = IntegerAttr.from_int_and_width(2, 64)
-        if parser.parse_optional_punctuation(","):
-            parser.parse_keyword("size")
-            parser.parse_punctuation("=")
-            size_value = parser.parse_integer()
-            size_attr = IntegerAttr.from_int_and_width(size_value, 64)
-        
-        parser.parse_punctuation(">")
-        return [ring_attr, encryption_type_attr, size_attr]
+        return parse_parameters_declarative(parser, field_specs)
+
+
 
     def get_alias_suffix(self, os) -> None:
         """Helper method for generating type aliases."""
@@ -303,36 +277,36 @@ class NewLWEPlaintextType(ParametrizedAttribute, TypeAttribute):
     application_data: ParameterDef[ApplicationDataAttr]
     plaintext_space: ParameterDef[PlaintextSpaceAttr]
 
-    @classmethod
+    @classmethod  
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
-        """Parse application_data and plaintext_space parameters."""
-        parser.parse_punctuation("<")
+        """Parse plaintext type parameters declaratively."""
         
-        # Parse "application_data = <...>"
-        parser.parse_keyword("application_data")
-        parser.parse_punctuation("=")
-        application_data_params = ApplicationDataAttr.parse_parameters(parser)
-        application_data = ApplicationDataAttr.new(application_data_params)
+        field_specs = {
+            "application_data": FieldSpec(
+                "application_data",
+                FieldType.NESTED_PARAMETERS,
+                required=True,
+                nested_parser=ApplicationDataAttr.parse_parameters,
+                attribute_class=ApplicationDataAttr
+            ),
+            "plaintext_space": FieldSpec(
+                "plaintext_space", 
+                FieldType.NESTED_PARAMETERS,
+                required=True,
+                nested_parser=PlaintextSpaceAttr.parse_parameters,
+                attribute_class=PlaintextSpaceAttr
+            )
+        }
         
-        parser.parse_punctuation(",")
-        
-        # Parse "plaintext_space = <...>"
-        parser.parse_keyword("plaintext_space")
-        parser.parse_punctuation("=")
-        plaintext_space_params = PlaintextSpaceAttr.parse_parameters(parser)
-        plaintext_space = PlaintextSpaceAttr.new(plaintext_space_params)
-        
-        parser.parse_punctuation(">")
-        
-        return [application_data, plaintext_space]
+        return parse_parameters_declarative(parser, field_specs)
 
-    def print_parameters(self, printer: Printer) -> None:
-        """Print application_data and plaintext_space parameters."""
-        printer.print_string("<application_data = ")
-        self.application_data.print_parameters(printer)
-        printer.print_string(", plaintext_space = ")
-        self.plaintext_space.print_parameters(printer)
-        printer.print_string(">")
+        def print_parameters(self, printer: Printer) -> None:
+            """Print application_data and plaintext_space parameters."""
+            printer.print_string("<application_data = ")
+            self.application_data.print_parameters(printer)
+            printer.print_string(", plaintext_space = ")
+            self.plaintext_space.print_parameters(printer)
+            printer.print_string(">")
 
 
 @irdl_attr_definition
@@ -355,55 +329,55 @@ class NewLWECiphertextType(ParametrizedAttribute, TypeAttribute):
 
     @classmethod
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
-        parser.parse_punctuation("<")
+        """Parse all ciphertext type parameters declaratively."""
         
-        # Parse "application_data = <...>"
-        parser.parse_keyword("application_data")
-        parser.parse_punctuation("=")
-        application_data_params = ApplicationDataAttr.parse_parameters(parser)
-        application_data = ApplicationDataAttr.new(application_data_params)
+        field_specs = {
+            "application_data": FieldSpec(
+                "application_data", 
+                FieldType.NESTED_PARAMETERS,
+                required=True,
+                nested_parser=ApplicationDataAttr.parse_parameters,
+                attribute_class=ApplicationDataAttr
+            ),
+            "plaintext_space": FieldSpec(
+                "plaintext_space",
+                FieldType.NESTED_PARAMETERS, 
+                required=True,
+                nested_parser=PlaintextSpaceAttr.parse_parameters,
+                attribute_class=PlaintextSpaceAttr
+            ),
+            "ciphertext_space": FieldSpec(
+                "ciphertext_space",
+                FieldType.NESTED_PARAMETERS,
+                required=True, 
+                nested_parser=CiphertextSpaceAttr.parse_parameters,
+                attribute_class=CiphertextSpaceAttr
+            ),
+            "key": FieldSpec(
+                "key",
+                FieldType.ATTRIBUTE,
+                required=True
+            ),
+            "modulus_chain": FieldSpec(
+                "modulus_chain",
+                FieldType.FLEXIBLE_ATTRIBUTE,
+                required=False,
+                attribute_class=ModulusChainAttr
+            )
+        }
         
-        parser.parse_punctuation(",")
+        result = parse_parameters_declarative(parser, field_specs)
         
-        # Parse "plaintext_space = <...>"
-        parser.parse_keyword("plaintext_space")
-        parser.parse_punctuation("=")
-        plaintext_space_params = PlaintextSpaceAttr.parse_parameters(parser)
-        plaintext_space = PlaintextSpaceAttr.new(plaintext_space_params)
-        
-        parser.parse_punctuation(",")
-        
-        # Parse "ciphertext_space = #ciphertext_space_L1" (attribute reference)
-        parser.parse_keyword("ciphertext_space")
-        parser.parse_punctuation("=")
-        ciphertext_space = parser.parse_attribute()  # This handles references
-        
-        parser.parse_punctuation(",")
-        
-        # Parse "key = #key" (attribute reference)
-        parser.parse_keyword("key")
-        parser.parse_punctuation("=")
-        key = parser.parse_attribute()  # This handles references
-        
-        # modulus_chain is optional
-        modulus_chain = None
-        if parser.parse_optional_punctuation(","):
-            parser.parse_keyword("modulus_chain")
-            parser.parse_punctuation("=")
-            modulus_chain = parser.parse_attribute()  # This handles references like #modulus_chain_L1_C1
-        
-        parser.parse_punctuation(">")
-        
-        # Return parameters
-        if modulus_chain is not None:
-            return [application_data, plaintext_space, ciphertext_space, key, modulus_chain]
-        else:
-            # Create default/empty modulus chain
-            from xdsl.dialects.builtin import ArrayAttr, IntegerAttr
+        # If modulus_chain wasn't provided, create a default one
+        if len(result) == 4:  # No modulus_chain
             empty_elements = ArrayAttr([])
-            default_current = IntegerAttr.from_int_and_width(0, 64)
+            default_current = IntegerAttr.from_int_and_width(0, 64) 
             default_modulus_chain = ModulusChainAttr([empty_elements, default_current])
-            return [application_data, plaintext_space, ciphertext_space, key, default_modulus_chain]
+            result.append(default_modulus_chain)
+        
+        return result
+
+
 
     def print_parameters(self, printer: Printer) -> None:
         """Print all ciphertext type parameters."""
