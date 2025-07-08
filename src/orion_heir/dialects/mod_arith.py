@@ -86,9 +86,7 @@ class ModArithType(ParametrizedAttribute, TypeAttribute):
 
 ModArith = Dialect(
     "mod_arith",
-    # [
-    #     AddOp,
-    # ],
+    [],
     [
         ModArithType,
     ],
