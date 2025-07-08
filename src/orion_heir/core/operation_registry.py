@@ -191,13 +191,15 @@ class LWEEncodingHandler(BaseOperationHandler):
         
         # Get the plaintext to encode
         plaintext_key = f"pt_{operation.result_var}_0" if operation.result_var else "constant_0"
+        plaintext_type = type_builder.get_default_plaintext_type()
+
         if plaintext_key in constants:
             plaintext = constants[plaintext_key]
             
             # Create encoding operation
             encode_op = RLWEEncodeOp(
                 operands=[plaintext],
-                result_types=[current_value.type]  # Use current ciphertext type
+                result_types=[plaintext_type]
             )
             
             block.add_op(encode_op)
