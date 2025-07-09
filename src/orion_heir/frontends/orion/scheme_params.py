@@ -110,8 +110,8 @@ class OrionSchemeParameters(SchemeParameters):
                     'backend': self.backend,
                     'fuse_modules': True,
                     'debug': False,
-                    'diags_path': '',
-                    'keys_path': '',
+                    'diags_path': 'data/diagonals.h5',
+                    'keys_path': 'data/keys.h5',
                     'io_mode': 'none'
                 }
             }
