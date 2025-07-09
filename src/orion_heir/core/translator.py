@@ -85,44 +85,50 @@ class GenericTranslator:
         return ModuleOp([], attributes)
     
     def _create_function(self, 
-                        operations: List[FHEOperation],
-                        type_builder: TypeBuilder,
-                        function_name: str) -> FuncOp:
-        """Create a function containing the translated operations."""
+                               operations: List[FHEOperation],
+                               type_builder: TypeBuilder,
+                               function_name: str) -> FuncOp:
+        """Create a function with simple sequential operation processing."""
         
-        # Determine input and output types
+        # Setup function
         input_type = type_builder.get_default_ciphertext_type()
-        
-        # Create function with placeholder return type (will be corrected)
         func_type = FunctionType.from_lists([input_type], [input_type])
-        func = FuncOp(
-            name=function_name,
-            function_type=func_type,
-            region=Region.DEFAULT,
-            visibility=None
-        )
-        
+        func = FuncOp(name=function_name, function_type=func_type, region=Region.DEFAULT)
         entry_block = func.body.blocks.first
         
-        # Create constants for the operations
-        constant_manager = ConstantManager(type_builder)
-        constants = constant_manager.create_constants(entry_block, operations)
-        
-        # Translate operations sequentially
+        # Simple constants dictionary - just stores operation results by name
+        constants = {}
         current_value = entry_block.args[0]  # Function input
         
+        # Process operations one by one
         for i, operation in enumerate(operations):
-            print(f"  Translating operation {i+1}/{len(operations)}: {operation.op_type}")
-            current_value = self.operation_registry.translate_operation(
-                operation, current_value, entry_block, constants, type_builder
-            )
+            print(f"  Processing operation {i+1}/{len(operations)}: {operation.op_type}")
+            
+            # Get handler
+            handler = self.operation_registry.handlers.get(operation.op_type)
+            if not handler:
+                print(f"⚠️ No handler for {operation.op_type}")
+                continue
+            
+            # Process operation
+            try:
+                result = handler.handle(operation, current_value, entry_block, constants, type_builder)
+                
+                # Store result by operation name
+                if operation.result_var:
+                    constants[operation.result_var] = result
+                
+                # Update current value only for non-encode operations
+                if operation.op_type != 'encode':
+                    current_value = result
+                    
+            except Exception as e:
+                print(f"❌ Error processing {operation.op_type}: {e}")
+                import traceback
+                traceback.print_exc()
         
-        # Update function type with actual return type
-        actual_return_type = current_value.type
-        corrected_func_type = FunctionType.from_lists([input_type], [actual_return_type])
-        func.function_type = corrected_func_type
-        
-        # Add return statement
+        # Finish function
+        func.function_type = FunctionType.from_lists([input_type], [current_value.type])
         entry_block.add_op(ReturnOp(current_value))
         
         return func

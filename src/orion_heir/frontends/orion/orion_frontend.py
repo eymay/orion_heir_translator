@@ -135,32 +135,118 @@ class OrionFrontend(FrontendInterface):
             }
         }
     
-    def extract_operations(self, source: Any) -> List[FHEOperation]:
+    def extract_operations(self, model: Any) -> List[FHEOperation]:
         """
-        Extract FHE operations from various Orion sources.
+        Extract FHE operations from a compiled Orion model.
         
-        Args:
-            source: Can be:
-                - Compiled Orion model (after orion.compile())
-                - List of operation dictionaries
-                
-        Returns:
-            List of FHEOperation objects
-            
-        Raises:
-            ValueError: If source type is not supported
+        This method extracts the actual operations that Orion performs during
+        FHE inference, including proper handling of fused operations.
         """
-        if self._is_compiled_orion_model(source):
-            return self._extract_from_compiled_model(source)
-        elif isinstance(source, (list, tuple)):
-            return self._extract_from_operation_list(source)
-        elif hasattr(source, 'operations'):
-            return self._extract_from_operation_list(source.operations)
-        else:
-            raise ValueError(
-                f"Unsupported source type: {type(source)}. "
-                f"Expected compiled Orion model or list of operations."
-            )
+        operations = []
+        
+        # Track expected vs found operations for warnings
+        expected_layers = []
+        found_layers = []
+        
+        # Get all layers from the model
+        all_layers = list(model.named_modules())
+        
+        # Identify what we expect to find
+        for name, layer in all_layers:
+            if name:  # Skip empty names (root module)
+                layer_type = layer.__class__.__name__
+                expected_layers.append(f"{name}({layer_type})")
+        
+        print(f"📋 Expected layers: {expected_layers}")
+        
+        # Process each layer
+        for name, layer in all_layers:
+            if not name:  # Skip root module
+                continue
+                
+            layer_type = layer.__class__.__name__
+            
+            # Check if this is a layer that should produce FHE operations
+            if self._should_extract_layer(layer):
+                print(f"🔍 Processing layer: {name} ({layer_type})")
+                
+                # Get operations based on layer type
+                if layer_type == 'Linear':
+                    layer_ops = self._get_linear_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(Linear)")
+                    
+                elif layer_type == 'Quad':
+                    layer_ops = self._get_quad_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(Quad)")
+                    
+                elif layer_type == 'BatchNorm1d':
+                    # Check if BatchNorm is fused into adjacent Linear layer
+                    if self._is_batchnorm_fused(layer):
+                        print(f"    ℹ️  BatchNorm {name} is fused into adjacent Linear layer")
+                        found_layers.append(f"{name}(BatchNorm1d-fused)")
+                    else:
+                        layer_ops = self._get_batchnorm_operations(layer, name)
+                        operations.extend(layer_ops)
+                        found_layers.append(f"{name}(BatchNorm1d)")
+                        
+                elif layer_type == 'Flatten':
+                    # Flatten is plaintext operation, handled by Linear diagonals
+                    print(f"    ℹ️  Flatten {name} is plaintext operation (handled by Linear diagonals)")
+                    found_layers.append(f"{name}(Flatten-plaintext)")
+                    
+                else:
+                    print(f"    ⚠️  Unknown layer type: {layer_type}")
+            else:
+                # Layer doesn't produce FHE operations
+                if layer_type in ['Flatten', 'BatchNorm1d']:
+                    print(f"    ℹ️  {name}({layer_type}) - no direct FHE operations")
+                else:
+                    print(f"    ⚠️  {name}({layer_type}) - no operations extracted")
+        
+        # Report what we found vs expected
+        print(f"\n📊 Extraction Summary:")
+        print(f"   Expected layers: {len(expected_layers)}")
+        print(f"   Processed layers: {len(found_layers)}")
+        print(f"   Total operations: {len(operations)}")
+        
+        # Check for missing operations
+        missing_activations = []
+        for name, layer in all_layers:
+            if layer.__class__.__name__ == 'Quad' and f"{name}(Quad)" not in found_layers:
+                missing_activations.append(name)
+        
+        if missing_activations:
+            print(f"   ⚠️  Missing Quad activations: {missing_activations}")
+        
+        return operations
+
+    def _should_extract_layer(self, layer: Any) -> bool:
+        """
+        Check if a layer should produce FHE operations.
+        
+        This expanded version handles more layer types beyond just Linear.
+        """
+        layer_type = layer.__class__.__name__
+        
+        # Linear layers always produce operations
+        if layer_type == 'Linear':
+            return hasattr(layer, 'diagonals') or hasattr(layer, 'transform_ids')
+        
+        # Quad activations produce operations
+        if layer_type == 'Quad':
+            return hasattr(layer, 'level')  # Compiled Quad layers have level
+        
+        # BatchNorm may produce operations if not fused
+        if layer_type == 'BatchNorm1d':
+            return not self._is_batchnorm_fused(layer)
+        
+        # Flatten is plaintext, no FHE operations needed
+        if layer_type == 'Flatten':
+            return False
+        
+        return False
     
     def _is_compiled_orion_model(self, source: Any) -> bool:
         """
@@ -315,12 +401,37 @@ class OrionFrontend(FrontendInterface):
                     }
                 ))
         
-        # Bias addition using Orion's precomputed bias plaintext
+        # Bias addition using Orion's bias tensor
+        # Check for bias in multiple possible locations
+        bias_tensor = None
         if hasattr(layer, 'bias') and layer.bias is not None:
+            bias_tensor = layer.bias.data
+        elif hasattr(layer, 'on_bias') and layer.on_bias is not None:
+            bias_tensor = layer.on_bias
+        
+        if bias_tensor is not None:
+            # Step 1: Encode bias tensor to LWE plaintext
+            encode_op = FHEOperation(
+                op_type="encode",
+                method_name="rlwe_encode",
+                args=[bias_tensor],
+                kwargs={},
+                result_var=f"{layer_name}_bias_encoded",
+                level=level,
+                metadata={
+                    'operation': 'lwe_encode',
+                    'layer': layer_name,
+                    'layer_type': 'Linear'
+                }
+            )
+            operations.append(encode_op)
+            
+            # Step 2: Add the encoded bias to ciphertext
+            # Use a special argument that indicates "use result of previous operation"
             operations.append(FHEOperation(
                 op_type="add_plain",
                 method_name="add_plain",
-                args=[],
+                args=[f"@{layer_name}_bias_encoded"],  # Special syntax: @ means "use result of this operation"
                 kwargs={},
                 result_var=f"{layer_name}_result",
                 level=level,
@@ -332,6 +443,8 @@ class OrionFrontend(FrontendInterface):
             ))
         
         return operations
+
+
     
     def _get_conv_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
         """
@@ -377,50 +490,136 @@ class OrionFrontend(FrontendInterface):
             ))
         
         return operations
-    
-    def _get_activation_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+
+    def _get_quad_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
         """
-        Get operations for activation layers.
+        Get operations for a Quad activation layer.
         
-        Activation functions in FHE are polynomial approximations.
+        Quad activation: f(x) = x^2
+        This requires a self-multiplication operation in FHE.
         """
         operations = []
         level = getattr(layer, 'level', 1)
-        layer_type = layer.__class__.__name__
         
-        if layer_type == 'Quad':
-            # Quadratic activation: x^2
-            operations.append(FHEOperation(
-                op_type="mul",
-                method_name="mul",
-                args=[],
-                kwargs={},
-                result_var=f"{layer_name}_quad",
-                level=level - 1,
-                metadata={
-                    'operation': 'quadratic_activation',
-                    'layer': layer_name,
-                    'layer_type': layer_type
-                }
-            ))
-        else:
-            # General polynomial activation (would need polynomial dialect)
-            # For now, represent as a placeholder
-            operations.append(FHEOperation(
-                op_type="mul",  # Simplified representation
-                method_name="mul",
-                args=[],
-                kwargs={},
-                result_var=f"{layer_name}_activation",
-                level=level - 1,
-                metadata={
-                    'operation': 'polynomial_activation',
-                    'layer': layer_name,
-                    'layer_type': layer_type
-                }
-            ))
+        print(f"    🔢 Quad activation: x^2 at level {level}")
+        
+        # Quadratic activation: x * x
+        operations.append(FHEOperation(
+            op_type="quad",
+            method_name="quad",
+            args=[],  # Self-multiplication, no additional args needed
+            kwargs={},
+            result_var=f"{layer_name}_result",
+            level=level,
+            metadata={
+                'operation': 'quadratic_activation',
+                'layer': layer_name,
+                'layer_type': 'Quad',
+                'polynomial_degree': 2,
+                'level_consumed': True  # This operation consumes a level
+            }
+        ))
         
         return operations
+
+    def _get_batchnorm_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for a standalone BatchNorm layer.
+        
+        BatchNorm: y = (x - mean) / std * weight + bias
+        In FHE: y = x * (weight/std) + (bias - mean*weight/std)
+        """
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        print(f"    📊 Standalone BatchNorm at level {level}")
+        
+        # Get BatchNorm parameters
+        weight = layer.weight.data if hasattr(layer, 'weight') and layer.weight is not None else None
+        bias = layer.bias.data if hasattr(layer, 'bias') and layer.bias is not None else None
+        running_mean = layer.running_mean.data if hasattr(layer, 'running_mean') else None
+        running_var = layer.running_var.data if hasattr(layer, 'running_var') else None
+        eps = getattr(layer, 'eps', 1e-5)
+        
+        if weight is not None and running_var is not None:
+            # Compute fused parameters
+            import torch
+            std = torch.sqrt(running_var + eps)
+            fused_weight = weight / std
+            fused_bias = bias - running_mean * fused_weight if bias is not None and running_mean is not None else None
+            
+            # Step 1: Multiply by (weight/std)
+            operations.append(FHEOperation(
+                op_type="encode",
+                method_name="rlwe_encode",
+                args=[fused_weight],
+                kwargs={},
+                result_var=f"{layer_name}_weight_encoded",
+                level=level,
+                metadata={
+                    'operation': 'lwe_encode',
+                    'layer': layer_name,
+                    'layer_type': 'BatchNorm1d'
+                }
+            ))
+            
+            operations.append(FHEOperation(
+                op_type="mul_plain",
+                method_name="mul_plain",
+                args=[f"@{layer_name}_weight_encoded"],
+                kwargs={},
+                result_var=f"{layer_name}_normalized",
+                level=level,
+                metadata={
+                    'operation': 'batchnorm_scale',
+                    'layer': layer_name,
+                    'layer_type': 'BatchNorm1d'
+                }
+            ))
+            
+            # Step 2: Add bias if present
+            if fused_bias is not None:
+                operations.append(FHEOperation(
+                    op_type="encode",
+                    method_name="rlwe_encode",
+                    args=[fused_bias],
+                    kwargs={},
+                    result_var=f"{layer_name}_bias_encoded",
+                    level=level,
+                    metadata={
+                        'operation': 'lwe_encode',
+                        'layer': layer_name,
+                        'layer_type': 'BatchNorm1d'
+                    }
+                ))
+                
+                operations.append(FHEOperation(
+                    op_type="add_plain",
+                    method_name="add_plain",
+                    args=[f"@{layer_name}_bias_encoded"],
+                    kwargs={},
+                    result_var=f"{layer_name}_result",
+                    level=level,
+                    metadata={
+                        'operation': 'batchnorm_bias',
+                        'layer': layer_name,
+                        'layer_type': 'BatchNorm1d'
+                    }
+                ))
+        
+        return operations
+
+    def _is_batchnorm_fused(self, layer: Any) -> bool:
+        """
+        Check if a BatchNorm layer is fused into an adjacent Linear layer.
+        
+        In Orion, BatchNorm is often fused into the preceding Linear layer
+        during compilation for efficiency.
+        """
+        # Simple heuristic: if BatchNorm doesn't have a level assigned,
+        # it's likely fused into another layer
+        return not hasattr(layer, 'level') or layer.level is None
+
     
     def _get_generic_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
         """

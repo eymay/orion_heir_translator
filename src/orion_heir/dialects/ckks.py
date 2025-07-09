@@ -356,24 +356,25 @@ class ExtractOp(IRDLOperation):
 @irdl_op_definition
 class LinearTransformOp(IRDLOperation):
     """
-    Linear transformation operation for CKKS using precomputed diagonals.
+    Linear transformation operation in CKKS.
     
-    This represents Orion's diagonal-based linear transformation, which is
-    conceptually equivalent to matrix multiplication but uses precomputed
-    diagonal encodings for efficiency.
-
-    Example: %result = ckks.linear_transform %input : !ct -> !ct
+    This operation performs a linear transformation using precomputed diagonal plaintexts.
+    It takes a ciphertext input and plaintext weights (diagonals) as inputs.
+    
+    Example: 
+    %result = ckks.linear_transform %ciphertext, %weights : (!ct, !pt) -> !ct
     """
-
+    
     name = "ckks.linear_transform"
-
+    
+    # Two inputs: input ciphertext and plaintext weights
     input = operand_def(NewLWECiphertextType)
+    weights = operand_def(NewLWEPlaintextType)
     result = result_def(NewLWECiphertextType)
-
+    
     traits = traits_def(Pure())
-
-    assembly_format = "$input attr-dict `:` type($input) `->` type($result)"
-
+    
+    assembly_format = "$input `,` $weights attr-dict `:` `(` type($input) `,` type($weights) `)` `->` type($result)"
 
 
 CKKS = Dialect(

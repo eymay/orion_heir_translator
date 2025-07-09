@@ -5,13 +5,15 @@ This module provides a registry system for different FHE operations,
 allowing for easy extension and customization of translation behavior.
 """
 
-from typing import Dict, Callable, Any, Protocol
+from typing import Dict, Callable, Any, Protocol, List, Optional
 from abc import ABC, abstractmethod
 
 from xdsl.ir import SSAValue, Block
 from xdsl.dialects.builtin import IntegerAttr, IntegerType
 
 from .translator import FHEOperation
+
+import torch
 
 
 class OperationHandler(Protocol):
@@ -92,6 +94,7 @@ class CKKSArithmeticHandler(BaseOperationHandler):
         return None
 
 
+
 class CKKSPlaintextHandler(BaseOperationHandler):
     """Handler for CKKS plaintext operations."""
     
@@ -105,32 +108,47 @@ class CKKSPlaintextHandler(BaseOperationHandler):
               constants: Dict[str, SSAValue],
               type_builder: Any) -> SSAValue:
         """Handle CKKS plaintext operations (add_plain, mul_plain)."""
-        from ..dialects.ckks import AddPlainOp, MulPlainOp
+        
+        print(f"🔧 Processing {operation.op_type} operation: {operation.result_var}")
         
         # Get plaintext operand
         plaintext = self._get_plaintext_operand(operation, constants)
         if plaintext is None:
+            print(f"❌ No plaintext operand found for {operation.op_type}")
             return current_value
         
-        # Determine result type
-        result_type = type_builder.infer_plaintext_result_type(
-            operation.op_type, current_value.type, plaintext.type
-        )
+        print(f"✅ Found plaintext operand")
         
         # Create the operation
         op_instance = self.op_class(
             operands=[current_value, plaintext],
-            result_types=[result_type]
+            result_types=[current_value.type]
         )
         
         block.add_op(op_instance)
+        print(f"✅ Created {self.op_class.name} operation")
         return op_instance.results[0]
     
     def _get_plaintext_operand(self, operation: FHEOperation,
                               constants: Dict[str, SSAValue]) -> SSAValue:
         """Get the plaintext operand."""
-        if operation.result_var and f"pt_{operation.result_var}_0" in constants:
-            return constants[f"pt_{operation.result_var}_0"]
+        
+        # Check for special @ syntax in args
+        if operation.args:
+            for arg in operation.args:
+                if isinstance(arg, str) and arg.startswith('@'):
+                    # Reference to another operation's result
+                    ref_name = arg[1:]  # Remove the @
+                    if ref_name in constants:
+                        print(f"    Found referenced result: {ref_name}")
+                        return constants[ref_name]
+        
+        # Fallback to traditional patterns
+        if operation.result_var:
+            key = f"pt_{operation.result_var}_0"
+            if key in constants:
+                return constants[key]
+        
         return None
 
 
@@ -178,7 +196,7 @@ class CKKSRotationHandler(BaseOperationHandler):
 
 
 class LWEEncodingHandler(BaseOperationHandler):
-    """Handler for LWE encoding operations."""
+    """Simple handler for encoding operations."""
     
     def handle(self, 
               operation: FHEOperation,
@@ -186,26 +204,54 @@ class LWEEncodingHandler(BaseOperationHandler):
               block: Block,
               constants: Dict[str, SSAValue],
               type_builder: Any) -> SSAValue:
-        """Handle LWE encoding operations."""
+        """Handle encoding operations."""
         from ..dialects.lwe import RLWEEncodeOp
+        from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, TensorType, f32
+        from xdsl.dialects.arith import ConstantOp
+        import torch
+        import numpy as np
         
-        # Get the plaintext to encode
-        plaintext_key = f"pt_{operation.result_var}_0" if operation.result_var else "constant_0"
+        print(f"🔧 Processing encode operation: {operation.result_var}")
+        
+        if not operation.args:
+            print(f"❌ No tensor argument found")
+            return current_value
+        
+        # Get the tensor and create constant
+        tensor_arg = operation.args[0]
+        print(f"    Encoding tensor with shape: {tensor_arg.shape}")
+        
+        # Convert tensor to constant
+        if isinstance(tensor_arg, torch.Tensor):
+            tensor_np = tensor_arg.detach().cpu().numpy().astype(np.float32)
+        else:
+            tensor_np = np.array(tensor_arg, dtype=np.float32)
+        
+        tensor_shape = list(tensor_np.shape)
+        tensor_type = TensorType(f32, tensor_shape)
+        flat_data = [float(x) for x in tensor_np.flatten()]
+        
+        dense_attr = DenseIntOrFPElementsAttr.create_dense_float(tensor_type, flat_data)
+        const_op = ConstantOp(dense_attr, tensor_type)
+        block.add_op(const_op)
+        
+        # Encode to plaintext
         plaintext_type = type_builder.get_default_plaintext_type()
-
-        if plaintext_key in constants:
-            plaintext = constants[plaintext_key]
-            
-            # Create encoding operation
-            encode_op = RLWEEncodeOp(
-                operands=[plaintext],
-                result_types=[plaintext_type]
-            )
-            
-            block.add_op(encode_op)
-            return encode_op.results[0]
+        encode_op = RLWEEncodeOp(
+            operands=[const_op.results[0]],
+            result_types=[plaintext_type]
+        )
+        block.add_op(encode_op)
         
-        return current_value
+        print(f"✅ Created encoding operations")
+        
+        # Store result for future reference
+        if operation.result_var:
+            constants[operation.result_var] = encode_op.results[0]
+        
+        return encode_op.results[0]
+
+
 
 
 class OperationRegistry:
@@ -243,6 +289,8 @@ class OperationRegistry:
         # Linear transform operations (decomposed to rotations)
         self.handlers['linear_transform'] = CKKSLinearTransformHandler() 
 
+        self.handlers['quad'] = CKKSQuadHandler()
+
     def register_operation(self, op_type: str, handler: OperationHandler):
         """Register a custom operation handler."""
         self.handlers[op_type] = handler
@@ -271,7 +319,7 @@ class OperationRegistry:
 
 
 class CKKSLinearTransformHandler(BaseOperationHandler):
-    """Handler for CKKS linear transform operations."""
+    """Handler for CKKS linear transform operations with plaintext weights."""
     
     def handle(self, 
               operation: FHEOperation,
@@ -279,23 +327,384 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
               block: Block,
               constants: Dict[str, SSAValue],
               type_builder: Any) -> SSAValue:
-        """Handle CKKS linear transform operations."""
+        """Handle CKKS linear transform operations with both ciphertext and plaintext inputs."""
         from ..dialects.ckks import LinearTransformOp
+        from xdsl.dialects.builtin import IntegerAttr, IntegerType, ArrayAttr, FloatAttr, f32, StringAttr
         
         print(f"🔧 LinearTransform handler: Processing Orion linear transform")
         print(f"    Operation metadata: {operation.metadata}")
         
-        # Determine result type (same as input for now)
+        # Extract Orion metadata
+        orion_metadata = self._extract_orion_metadata(operation)
+        
+        # Step 1: Create the plaintext weights from Orion diagonal data
+        weights_plaintext = self._create_diagonal_plaintexts(operation, orion_metadata, block, type_builder)
+        
+        # Step 2: Create attributes from Orion metadata
+        attributes = self._create_attributes_from_metadata(orion_metadata, operation)
+        
+        # Step 3: Create the linear transform operation with both inputs
         result_type = current_value.type
         
-        # Create the linear transform operation
-        # This represents Orion's diagonal-based matrix multiplication
-        linear_transform_op = LinearTransformOp(
-            operands=[current_value],
-            result_types=[result_type]
+        try:
+            linear_transform_op = LinearTransformOp(
+                operands=[current_value, weights_plaintext],  # Ciphertext + plaintext weights
+                result_types=[result_type],
+                attributes=attributes
+            )
+            
+            block.add_op(linear_transform_op)
+            print(f"✅ Created ckks.linear_transform operation with ciphertext and plaintext weights")
+            print(f"    📋 Attributes: {list(attributes.keys())}")
+            
+            return linear_transform_op.results[0]
+            
+        except Exception as e:
+            print(f"❌ Error creating LinearTransformOp: {e}")
+            # Fallback to single input for now
+            linear_transform_op = LinearTransformOp(
+                operands=[current_value],
+                result_types=[result_type]
+            )
+            block.add_op(linear_transform_op)
+            print(f"⚠️  Created LinearTransformOp with single input (fallback)")
+            return linear_transform_op.results[0]
+    
+    def _create_diagonal_plaintexts(self, operation: FHEOperation, orion_metadata: Dict, 
+                                   block: Block, type_builder: Any) -> SSAValue:
+        """
+        Create plaintext weights from Orion diagonal data.
+        
+        In Orion, the linear transform uses precomputed diagonal plaintexts.
+        We need to extract these and encode them as LWE plaintexts.
+        """
+        from ..dialects.lwe import RLWEEncodeOp
+        from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, TensorType, f32
+        from xdsl.dialects.arith import ConstantOp
+        import torch
+        import numpy as np
+        
+        print(f"    🔧 Creating diagonal plaintexts...")
+        
+        # Try to get diagonal data from operation args
+        diagonal_data = None
+        if operation.args and len(operation.args) > 0:
+            # If diagonal data was passed as an argument
+            diagonal_data = operation.args[0]
+            print(f"    📊 Found diagonal data in operation args: {type(diagonal_data)}")
+        
+        # If no diagonal data in args, create placeholder
+        if diagonal_data is None:
+            diagonal_count = orion_metadata.get('diagonal_count', 128)
+            slots = orion_metadata.get('slots', 4096)
+            
+            # Create placeholder diagonal data (zeros)
+            # In a real implementation, this would come from Orion's diagonals
+            diagonal_data = torch.zeros(diagonal_count, slots, dtype=torch.float32)
+            print(f"    ⚠️  Created placeholder diagonal data: {diagonal_data.shape}")
+        
+        # Convert to numpy if it's a tensor
+        if isinstance(diagonal_data, torch.Tensor):
+            diagonal_np = diagonal_data.detach().cpu().numpy().astype(np.float32)
+        else:
+            diagonal_np = np.array(diagonal_data, dtype=np.float32)
+        
+        # Create tensor type and constant
+        tensor_shape = list(diagonal_np.shape)
+        tensor_type = TensorType(f32, tensor_shape)
+        flat_data = [float(x) for x in diagonal_np.flatten()]
+        
+        # Create dense attribute and constant operation
+        dense_attr = DenseIntOrFPElementsAttr.create_dense_float(tensor_type, flat_data)
+        const_op = ConstantOp(dense_attr, tensor_type)
+        block.add_op(const_op)
+        
+        # Encode to LWE plaintext
+        plaintext_type = type_builder.get_default_plaintext_type()
+        encode_op = RLWEEncodeOp(
+            operands=[const_op.results[0]],
+            result_types=[plaintext_type]
+        )
+        block.add_op(encode_op)
+        
+        print(f"    ✅ Created diagonal plaintexts: {tensor_shape}")
+        return encode_op.results[0]
+    
+    def _create_attributes_from_metadata(self, orion_metadata: Dict, operation: FHEOperation) -> Dict:
+        """Create MLIR attributes from Orion metadata."""
+        from xdsl.dialects.builtin import IntegerAttr, IntegerType, ArrayAttr, FloatAttr, f32, StringAttr
+        
+        attributes = {}
+        
+        # Core parameters
+        if 'diagonal_count' in orion_metadata:
+            attributes['diagonal_count'] = IntegerAttr(orion_metadata['diagonal_count'], IntegerType(32))
+        
+        if 'layer' in orion_metadata:
+            attributes['layer_name'] = StringAttr(orion_metadata['layer'])
+        
+        if 'bsgs_ratio' in orion_metadata:
+            attributes['bsgs_ratio'] = FloatAttr(orion_metadata['bsgs_ratio'], f32)
+        
+        if 'baby_step_size' in orion_metadata:
+            attributes['baby_step_size'] = IntegerAttr(orion_metadata['baby_step_size'], IntegerType(32))
+        
+        if 'giant_step_size' in orion_metadata:
+            attributes['giant_step_size'] = IntegerAttr(orion_metadata['giant_step_size'], IntegerType(32))
+        
+        if 'slots' in orion_metadata:
+            attributes['slots'] = IntegerAttr(orion_metadata['slots'], IntegerType(32))
+        
+        if 'matrix_shape' in orion_metadata:
+            shape = orion_metadata['matrix_shape']
+            if isinstance(shape, (list, tuple)) and len(shape) == 2:
+                attributes['matrix_rows'] = IntegerAttr(shape[0], IntegerType(32))
+                attributes['matrix_cols'] = IntegerAttr(shape[1], IntegerType(32))
+        
+        if operation.level:
+            attributes['orion_level'] = IntegerAttr(operation.level, IntegerType(32))
+        
+        return attributes
+    
+    def _extract_orion_metadata(self, operation: FHEOperation) -> Dict:
+        """Extract Orion-specific metadata from the operation."""
+        import math
+        
+        metadata = {}
+        
+        # Copy basic metadata
+        if operation.metadata:
+            metadata.update(operation.metadata)
+        
+        # Add default BSGS parameters if not present
+        metadata.setdefault('bsgs_ratio', 2.0)
+        metadata.setdefault('slots', 4096)
+        metadata.setdefault('embedding_method', 'hybrid')
+        
+        # Calculate baby/giant step sizes
+        diagonal_count = metadata.get('diagonal_count', 128)
+        slots = metadata.get('slots', 4096)
+        bsgs_ratio = metadata.get('bsgs_ratio', 2.0)
+        
+        baby_step_size = int(math.sqrt(slots) / bsgs_ratio)
+        giant_step_size = slots // baby_step_size
+        
+        metadata['baby_step_size'] = baby_step_size
+        metadata['giant_step_size'] = giant_step_size
+        
+        return metadata
+
+
+
+def _get_linear_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+    """
+    Get operations for a Linear layer with proper diagonal data extraction.
+    """
+    operations = []
+    level = getattr(layer, 'level', 1)
+    
+    # Extract comprehensive Orion metadata
+    orion_metadata = {
+        'operation': 'orion_linear_transform',
+        'layer': layer_name,
+        'layer_type': 'Linear',
+        'orion_level': level,
+    }
+    
+    # Get transform information
+    if hasattr(layer, 'transform_ids') and layer.transform_ids:
+        orion_metadata['transform_blocks'] = len(layer.transform_ids)
+        orion_metadata['transform_ids'] = list(layer.transform_ids.keys())
+    
+    # Get diagonal information
+    if hasattr(layer, 'diagonals') and layer.diagonals:
+        total_diagonals = sum(len(diags) for diags in layer.diagonals.values())
+        orion_metadata['diagonal_count'] = total_diagonals
+        orion_metadata['diagonal_blocks'] = list(layer.diagonals.keys())
+        
+        # Get actual diagonal indices from first block
+        first_block = next(iter(layer.diagonals.values()))
+        if first_block:
+            orion_metadata['diagonal_indices'] = list(first_block.keys())
+    
+    # Get matrix shape and other metadata (same as before)
+    if hasattr(layer, 'weight'):
+        orion_metadata['matrix_shape'] = list(layer.weight.shape)
+    
+    if hasattr(layer, 'bsgs_ratio'):
+        orion_metadata['bsgs_ratio'] = layer.bsgs_ratio
+    
+    if hasattr(layer, 'scheme') and hasattr(layer.scheme, 'params'):
+        embedding_method = getattr(layer.scheme.params, 'embedding_method', 'hybrid')
+        orion_metadata['embedding_method'] = embedding_method
+        
+        if hasattr(layer.scheme.params, 'get_slots'):
+            orion_metadata['slots'] = layer.scheme.params.get_slots()
+    
+    if hasattr(layer, 'output_rotations'):
+        orion_metadata['output_rotations'] = layer.output_rotations
+    
+    # NEW: Extract the ACTUAL diagonal data from Orion
+    diagonal_data = None
+    
+    print(f"    🔍 Extracting diagonal data from Orion layer {layer_name}...")
+    
+    if hasattr(layer, 'diagonals') and layer.diagonals:
+        try:
+            # Orion stores diagonals as: {(block_row, block_col): {diag_idx: diag_data}}
+            diagonal_data = extract_orion_diagonals(layer)
+            if diagonal_data is not None:
+                orion_metadata['has_diagonal_data'] = True
+                print(f"    ✅ Extracted diagonal data: {diagonal_data.shape}")
+            else:
+                print(f"    ⚠️  Could not extract diagonal data from layer")
+        except Exception as e:
+            print(f"    ❌ Error extracting diagonal data: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # If no diagonal data, try to get it from the weight matrix directly
+    if diagonal_data is None and hasattr(layer, 'weight'):
+        try:
+            print(f"    🔄 Fallback: Creating diagonals from weight matrix...")
+            diagonal_data = create_diagonals_from_weight_matrix(layer)
+            if diagonal_data is not None:
+                orion_metadata['has_diagonal_data'] = True
+                orion_metadata['diagonal_source'] = 'weight_matrix'
+                print(f"    ✅ Created diagonal data from weights: {diagonal_data.shape}")
+        except Exception as e:
+            print(f"    ❌ Error creating diagonals from weight matrix: {e}")
+    
+    # Create the linear transform operation with diagonal data
+    linear_transform_args = []
+    if diagonal_data is not None:
+        linear_transform_args.append(diagonal_data)
+    
+    print(f"    📊 Final metadata: {orion_metadata}")
+    
+    operations.append(FHEOperation(
+        op_type="linear_transform",
+        method_name="linear_transform",
+        args=linear_transform_args,  # Include actual diagonal data
+        kwargs={},
+        result_var=f"{layer_name}_linear",
+        level=level,
+        metadata=orion_metadata
+    ))
+    
+    # Rest of the operations remain the same...
+    # (output rotations, bias addition, etc.)
+    
+    return operations
+
+
+def extract_orion_diagonals(layer: Any) -> Optional[torch.Tensor]:
+    """
+    Extract diagonal data from Orion layer with comprehensive checking.
+    """
+    import torch
+    import numpy as np
+    
+    if not hasattr(layer, 'diagonals') or not layer.diagonals:
+        print(f"      ❌ No diagonals attribute or empty diagonals")
+        return None
+    
+    print(f"      🔍 Orion diagonals structure:")
+    print(f"         Blocks: {list(layer.diagonals.keys())}")
+    
+    # Get the first block
+    first_block_key = next(iter(layer.diagonals.keys()))
+    first_block = layer.diagonals[first_block_key]
+    
+    if not first_block:
+        print(f"         ❌ First block is empty")
+        return None
+    
+    print(f"         First block {first_block_key}: {len(first_block)} diagonals")
+    
+    # Extract diagonal data
+    diagonal_list = []
+    diagonal_indices = sorted(first_block.keys())
+    
+    for diag_idx in diagonal_indices[:5]:  # Check first 5 diagonals
+        diag_data = first_block[diag_idx]
+        
+        print(f"         Diagonal {diag_idx}: type={type(diag_data)}")
+        
+        # Handle different data types
+        if diag_data is None:
+            print(f"         ❌ Diagonal {diag_idx} is None")
+            continue
+        elif isinstance(diag_data, (list, tuple)) and len(diag_data) == 0:
+            print(f"         ❌ Diagonal {diag_idx} is empty list/tuple")
+            continue
+        elif hasattr(diag_data, 'numel') and diag_data.numel() == 0:
+            print(f"         ❌ Diagonal {diag_idx} is empty tensor")
+            continue
+        
+        # Convert to numpy array
+        if hasattr(diag_data, 'numpy'):
+            diag_array = diag_data.detach().cpu().numpy()
+        elif hasattr(diag_data, '__array__'):
+            diag_array = np.array(diag_data)
+        elif isinstance(diag_data, (list, tuple)):
+            diag_array = np.array(diag_data)
+        else:
+            print(f"         ❌ Unknown diagonal data type: {type(diag_data)}")
+            continue
+        
+        diag_array = diag_array.astype(np.float32)
+        
+        # Check if it's meaningful data
+        if diag_array.size == 0:
+            print(f"         ❌ Diagonal {diag_idx} is empty array")
+            continue
+        elif np.allclose(diag_array, 0.0):
+            print(f"         ⚠️  Diagonal {diag_idx} is all zeros (might be valid)")
+        else:
+            print(f"         ✅ Diagonal {diag_idx}: shape={diag_array.shape}, range=[{diag_array.min():.6f}, {diag_array.max():.6f}]")
+        
+        diagonal_list.append(diag_array)
+    
+    if not diagonal_list:
+        print(f"      ❌ No valid diagonal data found")
+        return None
+    
+    # Stack all diagonals
+    try:
+        diagonal_array = np.stack(diagonal_list, axis=0)
+        diagonal_tensor = torch.from_numpy(diagonal_array)
+        
+        print(f"      ✅ Extracted diagonal tensor: {diagonal_tensor.shape}")
+        print(f"         Data range: [{diagonal_tensor.min():.6f}, {diagonal_tensor.max():.6f}]")
+        
+        return diagonal_tensor
+    except Exception as e:
+        print(f"      ❌ Error stacking diagonals: {e}")
+        return None
+
+
+class CKKSQuadHandler(BaseOperationHandler):
+    """Handler for CKKS quadratic activation operations."""
+    
+    def handle(self, 
+              operation: FHEOperation,
+              current_value: SSAValue,
+              block: Block,
+              constants: Dict[str, SSAValue],
+              type_builder: Any) -> SSAValue:
+        """Handle quadratic activation: x * x."""
+        from ..dialects.ckks import MulOp
+        
+        print(f"🔢 Processing quadratic activation: {operation.result_var}")
+        
+        # Create self-multiplication operation
+        quad_op = MulOp(
+            operands=[current_value, current_value],  # x * x
+            result_types=[current_value.type]
         )
         
-        block.add_op(linear_transform_op)
-        print(f"✅ Created ckks.linear_transform operation")
-        return linear_transform_op.results[0]
-
+        block.add_op(quad_op)
+        print(f"✅ Created ckks.mul operation (x * x)")
+        
+        return quad_op.results[0]
