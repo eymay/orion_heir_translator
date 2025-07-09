@@ -389,48 +389,10 @@ class OrionFrontend(FrontendInterface):
         if hasattr(layer, 'output_rotations'):
             orion_metadata['output_rotations'] = layer.output_rotations
         
-        # NEW: Extract the ACTUAL diagonal data from Orion
-        diagonal_data = None
-        
-        print(f"    🔍 Extracting diagonal data from Orion layer {layer_name}...")
-        
-        if hasattr(layer, 'diagonals') and layer.diagonals:
-            try:
-                # Orion stores diagonals as: {(block_row, block_col): {diag_idx: diag_data}}
-                diagonal_data = self.extract_orion_diagonals(layer)
-                if diagonal_data is not None:
-                    orion_metadata['has_diagonal_data'] = True
-                    print(f"    ✅ Extracted diagonal data: {diagonal_data.shape}")
-                else:
-                    print(f"    ⚠️  Could not extract diagonal data from layer")
-            except Exception as e:
-                print(f"    ❌ Error extracting diagonal data: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        # If no diagonal data, try to get it from the weight matrix directly
-        if diagonal_data is None and hasattr(layer, 'weight'):
-            try:
-                print(f"    🔄 Fallback: Creating diagonals from weight matrix...")
-                diagonal_data = create_diagonals_from_weight_matrix(layer)
-                if diagonal_data is not None:
-                    orion_metadata['has_diagonal_data'] = True
-                    orion_metadata['diagonal_source'] = 'weight_matrix'
-                    print(f"    ✅ Created diagonal data from weights: {diagonal_data.shape}")
-            except Exception as e:
-                print(f"    ❌ Error creating diagonals from weight matrix: {e}")
-        
-        # Create the linear transform operation with diagonal data
-        linear_transform_args = []
-        if diagonal_data is not None:
-            linear_transform_args.append(diagonal_data)
-        
-        print(f"    📊 Final metadata: {orion_metadata}")
-        
         operations.append(FHEOperation(
             op_type="linear_transform",
             method_name="linear_transform",
-            args=linear_transform_args,  # Include actual diagonal data
+            args=[layer],  # Include actual diagonal data
             kwargs={},
             result_var=f"{layer_name}_linear",
             level=level,

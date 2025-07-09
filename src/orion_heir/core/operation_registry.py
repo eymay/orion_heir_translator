@@ -9,11 +9,12 @@ from typing import Dict, Callable, Any, Protocol, List, Optional
 from abc import ABC, abstractmethod
 
 from xdsl.ir import SSAValue, Block
-from xdsl.dialects.builtin import IntegerAttr, IntegerType
+from xdsl.dialects.builtin import IntegerAttr, IntegerType, FloatAttr, f32
 
 from .translator import FHEOperation
 
 import torch
+import numpy as np
 
 
 class OperationHandler(Protocol):
@@ -323,8 +324,10 @@ class OperationRegistry:
             return current_value
 
 
+# Fixed Orion Translator - Block-Based Linear Transform Handler
+
 class CKKSLinearTransformHandler(BaseOperationHandler):
-    """Handler for CKKS linear transform operations with plaintext weights."""
+    """Handler for CKKS linear transform operations with block-based diagonal processing."""
     
     def handle(self, 
               operation: FHEOperation,
@@ -332,95 +335,161 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
               block: Block,
               constants: Dict[str, SSAValue],
               type_builder: Any) -> SSAValue:
-        """Handle CKKS linear transform operations with both ciphertext and plaintext inputs."""
+        """Handle CKKS linear transform with block-based diagonal processing."""
         from ..dialects.ckks import LinearTransformOp
         from xdsl.dialects.builtin import IntegerAttr, IntegerType, ArrayAttr, FloatAttr, f32, StringAttr
         
-        print(f"🔧 LinearTransform handler: Processing Orion linear transform")
+        print(f"🔧 LinearTransform handler: Processing Orion block-based linear transform")
         print(f"    Operation metadata: {operation.metadata}")
         
         # Extract Orion metadata
         orion_metadata = self._extract_orion_metadata(operation)
         
-        # Step 1: Create the plaintext weights from Orion diagonal data
-        weights_plaintext = self._create_diagonal_plaintexts(operation, orion_metadata, block, type_builder)
+        # Get the layer from operation args to extract diagonal blocks
+        layer = None
+        if operation.args and len(operation.args) > 0:
+            layer = operation.args[0]
         
-        # Step 2: Create attributes from Orion metadata
-        attributes = self._create_attributes_from_metadata(orion_metadata, operation)
-        
-        # Step 3: Create the linear transform operation with both inputs
-        result_type = current_value.type
-        
-        try:
-            linear_transform_op = LinearTransformOp(
-                operands=[current_value, weights_plaintext],  # Ciphertext + plaintext weights
-                result_types=[result_type],
-                attributes=attributes
+        # Create multiple linear transform operations - one per block
+        if layer and hasattr(layer, 'diagonals') and layer.diagonals:
+            return self._handle_blocked_linear_transform(
+                operation, current_value, block, constants, type_builder, layer, orion_metadata
             )
-            
-            block.add_op(linear_transform_op)
-            print(f"✅ Created ckks.linear_transform operation with ciphertext and plaintext weights")
-            print(f"    📋 Attributes: {list(attributes.keys())}")
-            
-            return linear_transform_op.results[0]
-            
-        except Exception as e:
-            print(f"❌ Error creating LinearTransformOp: {e}")
-            # Fallback to single input for now
-            linear_transform_op = LinearTransformOp(
-                operands=[current_value],
-                result_types=[result_type]
+        else:
+            # Fallback for single block or no diagonal data
+            return self._handle_single_linear_transform(
+                operation, current_value, block, constants, type_builder, orion_metadata
             )
-            block.add_op(linear_transform_op)
-            print(f"⚠️  Created LinearTransformOp with single input (fallback)")
-            return linear_transform_op.results[0]
     
-    def _create_diagonal_plaintexts(self, operation: FHEOperation, orion_metadata: Dict, 
-                                   block: Block, type_builder: Any) -> SSAValue:
-        """
-        Create plaintext weights from Orion diagonal data.
+    def _handle_blocked_linear_transform(self, 
+                                       operation: FHEOperation,
+                                       current_value: SSAValue,
+                                       block: Block,
+                                       constants: Dict[str, SSAValue],
+                                       type_builder: Any,
+                                       layer: Any,
+                                       orion_metadata: Dict) -> SSAValue:
+        """Handle linear transform with multiple blocks - create one operation per block."""
         
-        In Orion, the linear transform uses precomputed diagonal plaintexts.
-        We need to extract these and encode them as LWE plaintexts.
-        """
+        diagonals = layer.diagonals
+        transform_ids = getattr(layer, 'transform_ids', {})
+        
+        print(f"    🔍 Processing {len(diagonals)} diagonal blocks")
+        
+        # Determine matrix block structure
+        block_keys = list(diagonals.keys())
+        if not block_keys:
+            return self._handle_single_linear_transform(
+                operation, current_value, block, constants, type_builder, orion_metadata
+            )
+        
+        # Get dimensions
+        max_row = max(key[0] for key in block_keys)
+        max_col = max(key[1] for key in block_keys)
+        num_block_rows = max_row + 1
+        num_block_cols = max_col + 1
+        
+        print(f"    📊 Block matrix dimensions: {num_block_rows} x {num_block_cols}")
+        
+        # Create input tensor list for block columns
+        input_tensors = self._create_input_tensor_list(current_value, num_block_cols, block, type_builder)
+        
+        # Process each block row
+        block_row_results = []
+        for row in range(num_block_rows):
+            row_result = None
+            
+            # Process each block column in this row
+            for col in range(num_block_cols):
+                block_key = (row, col)
+                
+                if block_key in diagonals:
+                    # Create linear transform for this block
+                    block_result = self._create_block_linear_transform(
+                        block_key, diagonals[block_key], input_tensors[col],
+                        block, type_builder, orion_metadata
+                    )
+                    
+                    # Accumulate results across columns
+                    if row_result is None:
+                        row_result = block_result
+                    else:
+                        row_result = self._add_ciphertexts(row_result, block_result, block, type_builder)
+            
+            if row_result is not None:
+                block_row_results.append(row_result)
+        
+        # Combine all block row results
+        if len(block_row_results) == 1:
+            return block_row_results[0]
+        else:
+            return self._combine_block_results(block_row_results, block, type_builder)
+    
+    def _create_block_linear_transform(self, 
+                                     block_key: tuple,
+                                     block_diagonals: Dict,
+                                     input_tensor: SSAValue,
+                                     block: Block,
+                                     type_builder: Any,
+                                     orion_metadata: Dict) -> SSAValue:
+        """Create a single linear transform operation for one block."""
+        from ..dialects.ckks import LinearTransformOp
         from ..dialects.lwe import RLWEEncodeOp
         from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, TensorType, f32
         from xdsl.dialects.arith import ConstantOp
-        import torch
-        import numpy as np
         
-        print(f"    🔧 Creating diagonal plaintexts...")
+        row, col = block_key
+        print(f"      🎯 Creating block linear transform for block ({row}, {col})")
+        print(f"         Block contains {len(block_diagonals)} diagonals")
         
-        # Try to get diagonal data from operation args
-        diagonal_data = None
-        if operation.args and len(operation.args) > 0:
-            # If diagonal data was passed as an argument
-            diagonal_data = operation.args[0]
-            print(f"    📊 Found diagonal data in operation args: {type(diagonal_data)}")
+        # Stack all diagonals for this block (following Orion's pattern)
+        diagonal_indices = []
+        stacked_diagonal_data = []
         
-        # If no diagonal data in args, create placeholder
-        if diagonal_data is None:
-            diagonal_count = orion_metadata.get('diagonal_count', 128)
-            slots = orion_metadata.get('slots', 4096)
+        slots = orion_metadata.get('slots', 4096)
+        
+        for diag_idx in sorted(block_diagonals.keys()):
+            diag_data = block_diagonals[diag_idx]
             
-            # Create placeholder diagonal data (zeros)
-            # In a real implementation, this would come from Orion's diagonals
-            diagonal_data = torch.zeros(diagonal_count, slots, dtype=torch.float32)
-            print(f"    ⚠️  Created placeholder diagonal data: {diagonal_data.shape}")
+            # Convert to numpy array
+            if hasattr(diag_data, 'numpy'):
+                diag_array = diag_data.detach().cpu().numpy()
+            elif hasattr(diag_data, '__array__'):
+                diag_array = np.array(diag_data)
+            elif isinstance(diag_data, (list, tuple)):
+                diag_array = np.array(diag_data)
+            else:
+                print(f"         ⚠️  Skipping diagonal {diag_idx} with unknown type: {type(diag_data)}")
+                continue
+            
+            # Ensure correct shape and type
+            diag_array = diag_array.astype(np.float32)
+            if diag_array.size != slots:
+                print(f"         ⚠️  Diagonal {diag_idx} has size {diag_array.size}, expected {slots}")
+                if diag_array.size < slots:
+                    # Pad with zeros
+                    padded = np.zeros(slots, dtype=np.float32)
+                    padded[:diag_array.size] = diag_array
+                    diag_array = padded
+                else:
+                    # Truncate
+                    diag_array = diag_array[:slots]
+            
+            diagonal_indices.append(diag_idx)
+            stacked_diagonal_data.extend(diag_array.tolist())
         
-        # Convert to numpy if it's a tensor
-        if isinstance(diagonal_data, torch.Tensor):
-            diagonal_np = diagonal_data.detach().cpu().numpy().astype(np.float32)
-        else:
-            diagonal_np = np.array(diagonal_data, dtype=np.float32)
+        if not diagonal_indices:
+            print(f"         ❌ No valid diagonals found for block ({row}, {col})")
+            return input_tensor  # Return unchanged input
         
-        # Create tensor type and constant
-        tensor_shape = list(diagonal_np.shape)
+        print(f"         ✅ Stacked {len(diagonal_indices)} diagonals into single transform")
+        
+        # Create constant for stacked diagonal data
+        total_elements = len(diagonal_indices) * slots
+        tensor_shape = [len(diagonal_indices), slots]
         tensor_type = TensorType(f32, tensor_shape)
-        flat_data = [float(x) for x in diagonal_np.flatten()]
         
-        # Create dense attribute and constant operation
-        dense_attr = DenseIntOrFPElementsAttr.create_dense_float(tensor_type, flat_data)
+        dense_attr = DenseIntOrFPElementsAttr.create_dense_float(tensor_type, stacked_diagonal_data)
         const_op = ConstantOp(dense_attr, tensor_type)
         block.add_op(const_op)
         
@@ -432,8 +501,155 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         )
         block.add_op(encode_op)
         
-        print(f"    ✅ Created diagonal plaintexts: {tensor_shape}")
-        return encode_op.results[0]
+        # Create attributes for this block
+        attributes = self._create_block_attributes(block_key, diagonal_indices, orion_metadata)
+        
+        # Create the linear transform operation
+        result_type = input_tensor.type
+        linear_transform_op = LinearTransformOp(
+            operands=[input_tensor, encode_op.results[0]],
+            result_types=[result_type],
+            attributes=attributes
+        )
+        
+        block.add_op(linear_transform_op)
+        print(f"         ✅ Created block linear transform for ({row}, {col})")
+        
+        return linear_transform_op.results[0]
+    
+    def _create_input_tensor_list(self, 
+                                current_value: SSAValue,
+                                num_block_cols: int,
+                                block: Block,
+                                type_builder: Any) -> List[SSAValue]:
+        """Create list of input tensors for block columns."""
+        
+        if num_block_cols == 1:
+            return [current_value]
+        
+        # For multiple columns, we need to split/replicate the input
+        # This is a simplified version - in practice, you might need more sophisticated splitting
+        input_tensors = []
+        
+        for col in range(num_block_cols):
+            # For now, use the same input for all columns
+            # TODO: Implement proper input splitting based on block structure
+            input_tensors.append(current_value)
+        
+        return input_tensors
+    
+    def _add_ciphertexts(self, 
+                        left: SSAValue,
+                        right: SSAValue,
+                        block: Block,
+                        type_builder: Any) -> SSAValue:
+        """Add two ciphertexts."""
+        from ..dialects.ckks import AddOp
+        
+        add_op = AddOp(
+            operands=[left, right],
+            result_types=[left.type]
+        )
+        block.add_op(add_op)
+        
+        return add_op.results[0]
+    
+    def _combine_block_results(self, 
+                             block_results: List[SSAValue],
+                             block: Block,
+                             type_builder: Any) -> SSAValue:
+        """Combine results from multiple block rows."""
+        
+        result = block_results[0]
+        for i in range(1, len(block_results)):
+            result = self._add_ciphertexts(result, block_results[i], block, type_builder)
+        
+        return result
+    
+    def _create_block_attributes(self, 
+                               block_key: tuple,
+                               diagonal_indices: List[int],
+                               orion_metadata: Dict) -> Dict:
+        """Create attributes for a block linear transform."""
+        from xdsl.dialects.builtin import IntegerAttr, IntegerType, ArrayAttr, StringAttr
+        
+        row, col = block_key
+        attributes = {}
+        
+        # Block coordinates
+        attributes['block_row'] = IntegerAttr(row, IntegerType(32))
+        attributes['block_col'] = IntegerAttr(col, IntegerType(32))
+        
+        # Diagonal information
+        attributes['diagonal_count'] = IntegerAttr(len(diagonal_indices), IntegerType(32))
+        
+        # Orion metadata
+        if 'slots' in orion_metadata:
+            attributes['slots'] = IntegerAttr(orion_metadata['slots'], IntegerType(32))
+        
+        if 'bsgs_ratio' in orion_metadata:
+            attributes['bsgs_ratio'] = FloatAttr(orion_metadata['bsgs_ratio'], f32)
+        
+        if 'orion_level' in orion_metadata:
+            attributes['orion_level'] = IntegerAttr(orion_metadata['orion_level'], IntegerType(32))
+        
+        return attributes
+    
+    def _handle_single_linear_transform(self, 
+                                      operation: FHEOperation,
+                                      current_value: SSAValue,
+                                      block: Block,
+                                      constants: Dict[str, SSAValue],
+                                      type_builder: Any,
+                                      orion_metadata: Dict) -> SSAValue:
+        """Fallback handler for single block or no diagonal data."""
+        from ..dialects.ckks import LinearTransformOp
+        
+        print(f"    🔄 Fallback: Creating single linear transform operation")
+        
+        # Create simple linear transform operation
+        attributes = self._create_attributes_from_metadata(orion_metadata, operation)
+        
+        result_type = current_value.type
+        linear_transform_op = LinearTransformOp(
+            operands=[current_value],
+            result_types=[result_type],
+            attributes=attributes
+        )
+        
+        block.add_op(linear_transform_op)
+        print(f"    ✅ Created single linear transform (fallback)")
+        
+        return linear_transform_op.results[0]
+    
+    def _extract_orion_metadata(self, operation: FHEOperation) -> Dict:
+        """Extract Orion-specific metadata from the operation."""
+        import math
+        
+        metadata = {}
+        
+        # Copy basic metadata
+        if operation.metadata:
+            metadata.update(operation.metadata)
+        
+        # Add default BSGS parameters if not present
+        metadata.setdefault('bsgs_ratio', 2.0)
+        metadata.setdefault('slots', 4096)
+        metadata.setdefault('embedding_method', 'hybrid')
+        metadata.setdefault('orion_level', operation.level or 1)
+        
+        # Calculate baby/giant step sizes
+        diagonal_count = metadata.get('diagonal_count', 128)
+        slots = metadata.get('slots', 4096)
+        bsgs_ratio = metadata.get('bsgs_ratio', 2.0)
+        
+        baby_step_size = int(math.sqrt(slots) / bsgs_ratio)
+        giant_step_size = slots // baby_step_size
+        
+        metadata['baby_step_size'] = baby_step_size
+        metadata['giant_step_size'] = giant_step_size
+        
+        return metadata
     
     def _create_attributes_from_metadata(self, orion_metadata: Dict, operation: FHEOperation) -> Dict:
         """Create MLIR attributes from Orion metadata."""
@@ -466,123 +682,11 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
                 attributes['matrix_rows'] = IntegerAttr(shape[0], IntegerType(32))
                 attributes['matrix_cols'] = IntegerAttr(shape[1], IntegerType(32))
         
-        if operation.level:
-            attributes['orion_level'] = IntegerAttr(operation.level, IntegerType(32))
+        if 'orion_level' in orion_metadata:
+            attributes['orion_level'] = IntegerAttr(orion_metadata['orion_level'], IntegerType(32))
         
         return attributes
-    
-    def _extract_orion_metadata(self, operation: FHEOperation) -> Dict:
-        """Extract Orion-specific metadata from the operation."""
-        import math
-        
-        metadata = {}
-        
-        # Copy basic metadata
-        if operation.metadata:
-            metadata.update(operation.metadata)
-        
-        # Add default BSGS parameters if not present
-        metadata.setdefault('bsgs_ratio', 2.0)
-        metadata.setdefault('slots', 4096)
-        metadata.setdefault('embedding_method', 'hybrid')
-        
-        # Calculate baby/giant step sizes
-        diagonal_count = metadata.get('diagonal_count', 128)
-        slots = metadata.get('slots', 4096)
-        bsgs_ratio = metadata.get('bsgs_ratio', 2.0)
-        
-        baby_step_size = int(math.sqrt(slots) / bsgs_ratio)
-        giant_step_size = slots // baby_step_size
-        
-        metadata['baby_step_size'] = baby_step_size
-        metadata['giant_step_size'] = giant_step_size
-        
-        return metadata
 
-def extract_orion_diagonals(layer: Any) -> Optional[torch.Tensor]:
-    """
-    Extract diagonal data from Orion layer with comprehensive checking.
-    """
-    import torch
-    import numpy as np
-    
-    if not hasattr(layer, 'diagonals') or not layer.diagonals:
-        print(f"      ❌ No diagonals attribute or empty diagonals")
-        return None
-    
-    print(f"      🔍 Orion diagonals structure:")
-    print(f"         Blocks: {list(layer.diagonals.keys())}")
-    
-    # Get the first block
-    first_block_key = next(iter(layer.diagonals.keys()))
-    first_block = layer.diagonals[first_block_key]
-    
-    if not first_block:
-        print(f"         ❌ First block is empty")
-        return None
-    
-    print(f"         First block {first_block_key}: {len(first_block)} diagonals")
-    
-    # Extract diagonal data
-    diagonal_list = []
-    diagonal_indices = sorted(first_block.keys())
-    
-    for diag_idx in diagonal_indices:  # Check first 5 diagonals
-        diag_data = first_block[diag_idx]
-        
-        print(f"         Diagonal {diag_idx}: type={type(diag_data)}")
-        
-        # Handle different data types
-        if diag_data is None:
-            print(f"         ❌ Diagonal {diag_idx} is None")
-            continue
-        elif isinstance(diag_data, (list, tuple)) and len(diag_data) == 0:
-            print(f"         ❌ Diagonal {diag_idx} is empty list/tuple")
-            continue
-        elif hasattr(diag_data, 'numel') and diag_data.numel() == 0:
-            print(f"         ❌ Diagonal {diag_idx} is empty tensor")
-            continue
-        
-        # Convert to numpy array
-        if hasattr(diag_data, 'numpy'):
-            diag_array = diag_data.detach().cpu().numpy()
-        elif hasattr(diag_data, '__array__'):
-            diag_array = np.array(diag_data)
-        elif isinstance(diag_data, (list, tuple)):
-            diag_array = np.array(diag_data)
-        else:
-            print(f"         ❌ Unknown diagonal data type: {type(diag_data)}")
-            continue
-        
-        diag_array = diag_array.astype(np.float32)
-        
-        # Check if it's meaningful data
-        if diag_array.size == 0:
-            print(f"         ❌ Diagonal {diag_idx} is empty array")
-            continue
-        elif np.allclose(diag_array, 0.0):
-            print(f"         ⚠️  Diagonal {diag_idx} is all zeros (might be valid)")
-        else:
-            print(f"         ✅ Diagonal {diag_idx}: shape={diag_array.shape}, range=[{diag_array.min():.6f}, {diag_array.max():.6f}]")
-        
-        diagonal_list.append(diag_array)
-    
-    if not diagonal_list:
-        print(f"      ❌ No valid diagonal data found")
-        return None
-    
-    # Stack all diagonals
-    try:
-        diagonal_array = np.stack(diagonal_list, axis=0)
-        diagonal_tensor = torch.from_numpy(diagonal_array)
-        
-        print(f"      ✅ Extracted diagonal tensor: {diagonal_tensor.shape}")
-        print(f"         Data range: [{diagonal_tensor.min():.6f}, {diagonal_tensor.max():.6f}]")
-        
-        return diagonal_tensor
-    except Exception as e:
-        print(f"      ❌ Error stacking diagonals: {e}")
-        return None
 
 
 class CKKSQuadHandler(BaseOperationHandler):
