@@ -245,7 +245,11 @@ class LWEEncodingHandler(BaseOperationHandler):
         plaintext_type = type_builder.get_default_plaintext_type()
         encode_op = RLWEEncodeOp(
             operands=[const_op.results[0]],
-            result_types=[plaintext_type]
+            result_types=[plaintext_type],
+            attributes={
+                "encoding": type_builder.base_encoding,
+                "ring": type_builder.ring_f32
+            }
         )
         block.add_op(encode_op)
         
@@ -497,7 +501,11 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         plaintext_type = type_builder.get_default_plaintext_type()
         encode_op = RLWEEncodeOp(
             operands=[const_op.results[0]],
-            result_types=[plaintext_type]
+            result_types=[plaintext_type],
+            attributes={
+                "encoding": type_builder.base_encoding,
+                "ring": type_builder.ring_f32
+            }
         )
         block.add_op(encode_op)
         
