@@ -452,7 +452,7 @@ class OrionFrontend(FrontendInterface):
             operations.append(FHEOperation(
                 op_type="add_plain",
                 method_name="add_plain",
-                args=[f"@{final_result}", f"@{layer_name}_bias_encoded"],
+                args=[f"{final_result}", f"@{layer_name}_bias_encoded"],
                 kwargs={},
                 result_var=f"{layer_name}_result",
                 level=level,

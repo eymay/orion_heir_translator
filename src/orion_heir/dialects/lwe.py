@@ -300,13 +300,13 @@ class NewLWEPlaintextType(ParametrizedAttribute, TypeAttribute):
         
         return parse_parameters_declarative(parser, field_specs)
 
-        def print_parameters(self, printer: Printer) -> None:
-            """Print application_data and plaintext_space parameters."""
-            printer.print_string("<application_data = ")
-            self.application_data.print_parameters(printer)
-            printer.print_string(", plaintext_space = ")
-            self.plaintext_space.print_parameters(printer)
-            printer.print_string(">")
+    def print_parameters(self, printer: Printer) -> None:
+        """Print application_data and plaintext_space parameters."""
+        printer.print_string("<application_data = ")
+        self.application_data.print_parameters(printer)
+        printer.print_string(", plaintext_space = ")
+        self.plaintext_space.print_parameters(printer)
+        printer.print_string(">")
 
 
 @irdl_attr_definition

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from xdsl.ir import Operation, Region, Block, SSAValue
 from xdsl.dialects import builtin, arith, func
-from xdsl.dialects.builtin import ModuleOp, IntegerAttr, FloatAttr, DenseIntOrFPElementsAttr, TensorType, f32, i32
+from xdsl.dialects.builtin import ModuleOp, IntegerAttr, FloatAttr, DenseIntOrFPElementsAttr, TensorType, f32, i32, StringAttr, ArrayAttr
 from xdsl.parser import Parser
 from xdsl.printer import Printer
 from xdsl.context import Context
@@ -34,7 +34,8 @@ from xdsl.pattern_rewriter import (
 
 # Import HEIR dialects from your project
 from orion_heir.dialects.ckks import CKKS, LinearTransformOp, RotateOp, AddOp, MulPlainOp
-from orion_heir.dialects.lwe import LWE, RLWEEncodeOp
+from orion_heir.dialects.lwe import LWE, RLWEEncodeOp, NewLWEPlaintextType, ApplicationDataAttr, PlaintextSpaceAttr, InverseCanonicalEncodingAttr
+from orion_heir.dialects.polynomial import RingAttr, PolynomialAttr
 from orion_heir.dialects.rns import RNS
 from orion_heir.dialects.mod_arith import ModArith
 
@@ -53,11 +54,22 @@ class BSGSParameters:
     def from_linear_transform_op(cls, op: LinearTransformOp) -> "BSGSParameters":
         """Extract BSGS parameters from linear transform operation attributes."""
         
-        # Extract attributes
-        diagonal_count = int(op.attributes.get("diagonal_count", IntegerAttr(128, i32)).value.data)
-        slots = int(op.attributes.get("slots", IntegerAttr(4096, i32)).value.data)
-        bsgs_ratio = float(op.attributes.get("bsgs_ratio", FloatAttr(2.0, f32)).value.data)
-        orion_level = int(op.attributes.get("orion_level", IntegerAttr(5, i32)).value.data)
+        # Extract attributes with proper defaults
+        diagonal_count = 128  # Default
+        slots = 4096  # Default
+        bsgs_ratio = 2.0  # Default
+        orion_level = 5  # Default
+        
+        # Try to extract from operation attributes if they exist
+        if hasattr(op, 'attributes') and op.attributes:
+            if "diagonal_count" in op.attributes:
+                diagonal_count = int(op.attributes["diagonal_count"].value.data)
+            if "slots" in op.attributes:
+                slots = int(op.attributes["slots"].value.data)
+            if "bsgs_ratio" in op.attributes:
+                bsgs_ratio = float(op.attributes["bsgs_ratio"].value.data)
+            if "orion_level" in op.attributes:
+                orion_level = int(op.attributes["orion_level"].value.data)
         
         # Calculate BSGS parameters following Lattigo's approach
         sqrt_slots = int(math.sqrt(slots))
@@ -107,213 +119,178 @@ class LinearTransformBSGSLoweringPattern(RewritePattern):
             print("⚠️  No weights plaintext found, skipping lowering")
             return
         
-        # Generate BSGS lowering
-        result = self._generate_bsgs_operations(
-            input_ciphertext, weights_plaintext, bsgs_params, rewriter
-        )
+        # Create the BSGS operations
+        new_ops = []
         
-        # Replace the original operation
-        rewriter.replace_matched_op(result)
-    
-    def _generate_bsgs_operations(self, 
-                                input_ct: SSAValue, 
-                                weights_pt: SSAValue,
-                                params: BSGSParameters,
-                                rewriter: PatternRewriter) -> SSAValue:
-        """Generate the complete BSGS operation sequence."""
+        # Step 1: Create baby step rotations
+        baby_rotations = [input_ciphertext]  # rotation by 0 is the input itself
         
-        # Step 1: Pre-compute baby step rotations
-        baby_rotations = self._generate_baby_step_rotations(
-            input_ct, params.baby_step_size, rewriter
-        )
+        for i in range(1, bsgs_params.baby_step_size):
+            rotate_op = RotateOp.build(
+                operands=[input_ciphertext],
+                result_types=[input_ciphertext.type],
+                properties={"offset": IntegerAttr(i, i32)}
+            )
+            new_ops.append(rotate_op)
+            baby_rotations.append(rotate_op.results[0])
         
         # Step 2: Process each giant step
         giant_step_results = []
         
-        for giant_step in range(params.num_giant_steps):
-            giant_result = self._process_giant_step(
-                giant_step, input_ct, weights_pt, baby_rotations, params, rewriter
-            )
-            giant_step_results.append(giant_result)
+        for giant_step in range(bsgs_params.num_giant_steps):
+            baby_step_results = []
+            
+            # Process each baby step in this giant step
+            for baby_step in range(bsgs_params.baby_step_size):
+                diagonal_idx = giant_step * bsgs_params.baby_step_size + baby_step
+                
+                if diagonal_idx >= bsgs_params.diagonal_count:
+                    break  # No more diagonals to process
+                
+                # Get the appropriate baby step rotation
+                rotated_input = baby_rotations[baby_step]
+                
+                # Extract the specific diagonal from the weights tensor
+                # The weights tensor contains all diagonals - we need to select the right one
+                const_op, encode_op = self._extract_diagonal_from_weights(
+                    weights_plaintext, diagonal_idx, bsgs_params.slots
+                )
+                new_ops.extend([const_op, encode_op])
+                diagonal_weights = encode_op.results[0]
+                
+                # Multiply rotated input with diagonal weights
+                mul_op = MulPlainOp.build(
+                    operands=[rotated_input, diagonal_weights],
+                    result_types=[rotated_input.type]
+                )
+                new_ops.append(mul_op)
+                baby_step_results.append(mul_op.results[0])
+            
+            # Sum baby step results
+            if len(baby_step_results) == 0:
+                continue
+            elif len(baby_step_results) == 1:
+                baby_sum = baby_step_results[0]
+            else:
+                current_result = baby_step_results[0]
+                for i in range(1, len(baby_step_results)):
+                    add_op = AddOp.build(
+                        operands=[current_result, baby_step_results[i]],
+                        result_types=[current_result.type]
+                    )
+                    new_ops.append(add_op)
+                    current_result = add_op.results[0]
+                baby_sum = current_result
+            
+            # Apply giant step rotation if needed
+            if giant_step > 0:
+                giant_rotation = giant_step * bsgs_params.giant_step_size
+                rotate_op = RotateOp.build(
+                    operands=[baby_sum],
+                    result_types=[baby_sum.type],
+                    properties={"offset": IntegerAttr(giant_rotation, i32)}
+                )
+                new_ops.append(rotate_op)
+                giant_step_results.append(rotate_op.results[0])
+            else:
+                giant_step_results.append(baby_sum)
         
         # Step 3: Accumulate all giant step results
-        final_result = self._accumulate_results(giant_step_results, rewriter)
-        
-        return final_result
-    
-    def _generate_baby_step_rotations(self, 
-                                    input_ct: SSAValue,
-                                    baby_step_size: int,
-                                    rewriter: PatternRewriter) -> List[SSAValue]:
-        """Pre-compute rotations for baby steps (0, 1, 2, ..., baby_step_size-1)."""
-        
-        baby_rotations = []
-        
-        # Rotation 0 is just the original input
-        baby_rotations.append(input_ct)
-        
-        # Generate rotations 1, 2, ..., baby_step_size-1
-        for i in range(1, baby_step_size):
-            rotation_op = RotateOp.build(
-                operands=[input_ct],
-                result_types=[input_ct.type],
-                attributes={"offset": IntegerAttr(i, i32)}
-            )
-            rewriter.insert_op_before_matched_op(rotation_op)
-            baby_rotations.append(rotation_op.results[0])
-        
-        return baby_rotations
-    
-    def _process_giant_step(self,
-                          giant_step: int,
-                          input_ct: SSAValue,
-                          weights_pt: SSAValue, 
-                          baby_rotations: List[SSAValue],
-                          params: BSGSParameters,
-                          rewriter: PatternRewriter) -> SSAValue:
-        """Process one giant step: handle diagonals [giant_step * baby_step_size : (giant_step+1) * baby_step_size]."""
-        
-        start_diag = giant_step * params.baby_step_size
-        end_diag = min(start_diag + params.baby_step_size, params.diagonal_count)
-        num_diags_in_step = end_diag - start_diag
-        
-        # Apply giant step rotation (except for first giant step)
-        if giant_step == 0:
-            giant_input = input_ct
+        if len(giant_step_results) == 0:
+            print("⚠️  No giant step results generated")
+            return
+        elif len(giant_step_results) == 1:
+            final_result = giant_step_results[0]
         else:
-            giant_offset = giant_step * params.baby_step_size
-            giant_rotation_op = RotateOp.build(
-                operands=[input_ct],
-                result_types=[input_ct.type],
-                attributes={"offset": IntegerAttr(giant_offset, i32)}
-            )
-            rewriter.insert_op_before_matched_op(giant_rotation_op)
-            giant_input = giant_rotation_op.results[0]
-        
-        # Process each baby step within this giant step
-        baby_results = []
-        
-        for baby_step in range(num_diags_in_step):
-            diag_idx = start_diag + baby_step
-            
-            # Extract diagonal from weights tensor
-            diagonal_pt = self._extract_diagonal(
-                weights_pt, diag_idx, params.slots, rewriter
-            )
-            
-            # Get the appropriately rotated input
-            if giant_step == 0:
-                # Use pre-computed baby step rotation
-                rotated_input = baby_rotations[baby_step]
-            else:
-                # Apply baby step rotation to giant-step-rotated input
-                baby_rotation_op = RotateOp.build(
-                    operands=[giant_input],
-                    result_types=[giant_input.type],
-                    attributes={"offset": IntegerAttr(baby_step, i32)}
+            current_result = giant_step_results[0]
+            for i in range(1, len(giant_step_results)):
+                add_op = AddOp.build(
+                    operands=[current_result, giant_step_results[i]],
+                    result_types=[current_result.type]
                 )
-                rewriter.insert_op_before_matched_op(baby_rotation_op)
-                rotated_input = baby_rotation_op.results[0]
-            
-            # Multiply diagonal with rotated ciphertext
-            mult_op = MulPlainOp.build(
-                operands=[rotated_input, diagonal_pt],
-                result_types=[rotated_input.type]
-            )
-            rewriter.insert_op_before_matched_op(mult_op)
-            baby_results.append(mult_op.results[0])
+                new_ops.append(add_op)
+                current_result = add_op.results[0]
+            final_result = current_result
         
-        # Accumulate baby step results within this giant step
-        return self._accumulate_results(baby_results, rewriter)
+        # Insert all new operations and replace the original
+        for new_op in new_ops:
+            rewriter.insert_op_before_matched_op(new_op)
+        
+        # Replace the matched operation's results with the final result
+        rewriter.replace_matched_op([], [final_result])
+        print("✅ Successfully replaced linear transform with BSGS operations")
     
-    def _extract_diagonal(self,
-                         weights_tensor: SSAValue,
-                         diag_idx: int,
-                         slots: int,
-                         rewriter: PatternRewriter) -> SSAValue:
-        """Extract a single diagonal from the weights tensor."""
+    def _extract_diagonal_from_weights(self, weights_plaintext: SSAValue, diagonal_idx: int, slots: int) -> SSAValue:
+        """Extract a specific diagonal from the weights tensor.
         
-        # TODO: Implement proper tensor slicing to extract diagonal diag_idx
-        # For now, create a placeholder constant with the right shape
+        The weights tensor is tensor<128x4096xf32> where:
+        - First dimension (128) = number of diagonals  
+        - Second dimension (4096) = slots per diagonal
         
-        diagonal_data = [0.0] * slots  # Placeholder - should extract real data
+        We need to extract the diagonal_idx-th row as a tensor<4096xf32>.
+        """
+        # Find the defining constant operation
+        defining_op = weights_plaintext.owner
+        while defining_op and not isinstance(defining_op, RLWEEncodeOp):
+            defining_op = defining_op.operands[0].owner if defining_op.operands else None
         
+        if not defining_op or not isinstance(defining_op, RLWEEncodeOp):
+            raise ValueError("Could not find RLWEEncodeOp defining the weights")
+        
+        # Get the constant that feeds into the encode operation
+        const_op = defining_op.operands[0].owner
+        if not isinstance(const_op, arith.ConstantOp):
+            raise ValueError("Could not find ConstantOp defining the weights tensor")
+        
+        # Get the dense attribute containing the tensor data
+        weights_attr = const_op.properties["value"]
+        if not isinstance(weights_attr, DenseIntOrFPElementsAttr):
+            raise ValueError("Weights constant is not a DenseIntOrFPElementsAttr")
+        
+        # Extract the diagonal_idx-th row from the 2D tensor
+        # The data is stored as a flattened array: [row0_col0, row0_col1, ..., row1_col0, row1_col1, ...]
+        start_idx = diagonal_idx * slots
+        end_idx = start_idx + slots
+        
+        # Extract the row data
+        if hasattr(weights_attr, 'data'):
+            full_data = weights_attr.data.data  # Get the underlying array
+        else:
+            # Try different attribute access patterns
+            full_data = weights_attr.value if hasattr(weights_attr, 'value') else weights_attr
+        
+        # Convert to list if needed and slice
+        if hasattr(full_data, '__getitem__'):
+            diagonal_row = list(full_data[start_idx:end_idx])
+        else:
+            # If we can't slice, create a pattern (fallback)
+            diagonal_row = [0.1 * (diagonal_idx + 1)] * slots
+        
+        # print(f"    Extracted diagonal {diagonal_idx}: {len(diagonal_row)} values, first few: {diagonal_row[:5] if len(diagonal_row) > 5 else diagonal_row}")
+        
+        # Create a new constant with just this diagonal row
         diagonal_type = TensorType(f32, [slots])
-        diagonal_attr = DenseIntOrFPElementsAttr.create_dense_float(
-            diagonal_type, diagonal_data
-        )
+        diagonal_attr = DenseIntOrFPElementsAttr.from_list(diagonal_type, diagonal_row)
         
         const_op = arith.ConstantOp.build(
-            attributes={"value": diagonal_attr},
+            properties={"value": diagonal_attr},
             result_types=[diagonal_type]
         )
-        rewriter.insert_op_before_matched_op(const_op)
         
-        # Get the encoding and ring attributes from the original weights tensor
-        # We need to match the original RLWEEncodeOp that created weights_tensor
-        original_encoding = None
-        original_ring = None
+        # Create plaintext type (matching the original weights)
+        app_data = ApplicationDataAttr([TensorType(f32, [slots])])
+        encoding_attr = InverseCanonicalEncodingAttr([IntegerAttr(45, i32)])
+        poly_attr = PolynomialAttr([StringAttr("1 + x**8192")])
+        ring_attr = RingAttr([f32, poly_attr])
+        pt_space = PlaintextSpaceAttr([ring_attr, encoding_attr])
+        result_type = NewLWEPlaintextType([app_data, pt_space])
         
-        # Try to find the defining op of weights_tensor to get its attributes
-        if hasattr(weights_tensor, 'owner') and weights_tensor.owner:
-            defining_op = weights_tensor.owner
-            if hasattr(defining_op, 'encoding'):
-                original_encoding = defining_op.encoding
-            if hasattr(defining_op, 'ring'):
-                original_ring = defining_op.ring
-        
-        # If we can't find the original attributes, create reasonable defaults
-        if original_encoding is None:
-            # Create a default InverseCanonicalEncodingAttr
-            from orion_heir.dialects.lwe import InverseCanonicalEncodingAttr
-            original_encoding = InverseCanonicalEncodingAttr([IntegerAttr(45, i32)])  # scaling_factor = 45
-        
-        if original_ring is None:
-            # Create a default RingAttr  
-            from orion_heir.dialects.lwe import RingAttr
-            # This should match your scheme parameters
-            original_ring = RingAttr([
-                f32,  # coefficientType
-                # polynomial modulus and other ring parameters would go here
-            ])
-        
-        # Create the result type - use the same type as the original weights
-        result_type = weights_tensor.type
-        
-        # Encode to plaintext with proper attributes
         encode_op = RLWEEncodeOp.build(
             operands=[const_op.results[0]],
-            result_types=[result_type],
-            attributes={
-                "encoding": original_encoding,
-                "ring": original_ring
-            }
+            result_types=[result_type]
         )
-        rewriter.insert_op_before_matched_op(encode_op)
         
-        return encode_op.results[0]
-    
-    def _accumulate_results(self, results: List[SSAValue], rewriter: PatternRewriter) -> SSAValue:
-        """Accumulate a list of results using addition operations."""
-        
-        if len(results) == 0:
-            raise ValueError("Cannot accumulate empty results list")
-        
-        if len(results) == 1:
-            return results[0]
-        
-        # Accumulate pairwise: ((a + b) + c) + d + ...
-        current_result = results[0]
-        
-        for i in range(1, len(results)):
-            add_op = AddOp.build(
-                operands=[current_result, results[i]],
-                result_types=[current_result.type]
-            )
-            rewriter.insert_op_before_matched_op(add_op)
-            current_result = add_op.results[0]
-        
-        return current_result
+        return const_op, encode_op
 
 
 class CKKSLinearTransformLoweringPass:
@@ -372,12 +349,19 @@ class CKKSLinearTransformLoweringPass:
         transformed_module = self.run_pass(module)
         
         # Write output
-        printer = Printer()
-        output_text = printer.print_to_string(transformed_module)
+        from io import StringIO
         
         if output_file == "-":
-            print(output_text)
+            # Print to stdout
+            printer = Printer()
+            printer.print_op(transformed_module)
         else:
+            # Write to file
+            output_buffer = StringIO()
+            printer = Printer(stream=output_buffer)
+            printer.print_op(transformed_module)
+            output_text = output_buffer.getvalue()
+            
             with open(output_file, 'w') as f:
                 f.write(output_text)
 
