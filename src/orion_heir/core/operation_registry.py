@@ -121,7 +121,7 @@ class CKKSMulHandler(BaseOperationHandler):
             other_operand = current_value
         
         # Determine result type with increased dimension
-        result_type = type_builder.infer_result_type_with_relinearization(
+        result_type = type_builder.infer_result_type(
             'mul', current_value.type, other_operand.type if hasattr(other_operand, 'type') else current_value.type
         )
         
@@ -133,7 +133,7 @@ class CKKSMulHandler(BaseOperationHandler):
         block.add_op(mul_op)
         
         # Add relinearization to reduce dimension back to 2
-        relin_result_type = type_builder.create_relinearized_ciphertext_type(mul_op.results[0].type) 
+        relin_result_type = type_builder.create_ciphertext_type_with_dimension(2, preserve_from_type=mul_op.results[0].type)
 
         relin_op = RelinearizeOp(
             operands=[mul_op.results[0]],
@@ -277,8 +277,13 @@ class LWEEncodingHandler(BaseOperationHandler):
         # Get the tensor and create constant
         tensor_arg = operation.args[0]
         print(f"    Encoding tensor with shape: {tensor_arg.shape}")
+
+        target_scale = None
+        if hasattr(operation, 'metadata') and 'target_scale' in operation.metadata:
+            target_scale = operation.metadata['target_scale']
+
         
-        encoded_plaintext = type_builder.create_slot_based_plaintext_encoding(block, tensor_arg) 
+        encoded_plaintext = type_builder.create_slot_based_plaintext_encoding(block, tensor_arg, target_scale) 
 
         slots = getattr(type_builder.scheme_params, 'slots', 4096)
         print(f"✅ Created slot-based encoding (padded to {slots} slots)")

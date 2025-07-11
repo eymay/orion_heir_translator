@@ -215,7 +215,7 @@ class TypeBuilder:
         
         return const_op.results[0]
 
-    def create_slot_based_plaintext_encoding(self, block: Block, tensor_value: Any) -> SSAValue:
+    def create_slot_based_plaintext_encoding(self, block: Block, tensor_value: Any, target_scale: int = None, match_ciphertext_type: Any = None) -> SSAValue:
         """Create a plaintext encoding with slot-based padding."""
         from ..dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
         from ..dialects.polynomial import RingAttr, PolynomialAttr
@@ -296,6 +296,8 @@ class TypeBuilder:
                 log_scale = ct_encoding.scaling_factor.value.data
                 # Also use the same application data
                 self.app_data = match_ciphertext_type.parameters[0]
+            else:
+                app_data = self.app_data
         
         # Use provided log_scale or default
         if log_scale is None:
