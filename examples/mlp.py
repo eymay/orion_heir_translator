@@ -210,6 +210,7 @@ def main():
     # Generate MLIR output
     from xdsl.printer import Printer
     from io import StringIO
+    from xdsl.utils.exceptions import VerifyException
     
     output_buffer = StringIO()
     printer = Printer(stream=output_buffer)
@@ -218,7 +219,12 @@ def main():
     
     Path("minimal_mlp.mlir").write_text(mlir_output)
     print("💾 Saved to minimal_mlp.mlir")
-    
+    try:
+        # Verify the individual operation
+        module.verify()
+    except VerifyException as e:
+        print(f"❌ Failed verification: {e}")
+        raise
     # Show MLIR statistics
     print(f"\n📄 MLIR Statistics:")
     print("=" * 50)

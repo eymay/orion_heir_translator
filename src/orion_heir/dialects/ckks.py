@@ -22,15 +22,24 @@ from xdsl.irdl import (
     traits_def,
     VarConstraint,
 )
+
 from xdsl.parser import Parser
 from xdsl.printer import Printer
-from xdsl.traits import Pure
+from xdsl.traits import Pure, Commutative
 
 # Import our custom dialects - this ensures they are loaded when CKKS is loaded
 from .lwe import LWE, NewLWECiphertextType, NewLWEPlaintextType
 from .polynomial import Polynomial, RingAttr
 from .mod_arith import ModArith
 from .rns import RNS
+
+from .lwe_traits import (
+    SameOperandsAndResultRings,
+    SameOperandsAndResultPlaintextTypes,
+    AllCiphertextTypesMatch,
+    IsCiphertextPlaintextOp,
+    AllTypesMatch
+)
 
 
 @irdl_attr_definition
@@ -146,7 +155,12 @@ class AddOp(IRDLOperation):
     rhs = operand_def(NewLWECiphertextType)
     result = result_def(NewLWECiphertextType)
 
-    traits = traits_def(Pure())
+    traits = traits_def(
+        Pure(),
+        Commutative(),
+        SameOperandsAndResultRings(),
+        SameOperandsAndResultPlaintextTypes(),
+    )
 
     assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
 
@@ -165,7 +179,11 @@ class SubOp(IRDLOperation):
     rhs = operand_def(NewLWECiphertextType)
     result = result_def(NewLWECiphertextType)
 
-    traits = traits_def(Pure())
+    traits = traits_def(
+        Pure(),
+        SameOperandsAndResultRings(),
+        SameOperandsAndResultPlaintextTypes(),
+    )
 
     assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
 
@@ -184,8 +202,11 @@ class MulOp(IRDLOperation):
     rhs = operand_def(NewLWECiphertextType)
     result = result_def(NewLWECiphertextType)
 
-    traits = traits_def(Pure())
-
+    traits = traits_def(
+        Pure(),
+        Commutative(), 
+        SameOperandsAndResultRings()
+    )
     assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
 
 
@@ -203,8 +224,10 @@ class NegateOp(IRDLOperation):
     input = operand_def(T)
     result = result_def(T)
 
-    traits = traits_def(Pure())
-
+    traits = traits_def(
+        Pure(),
+        AllTypesMatch(),  # Input and output types must be identical
+    )
     assembly_format = "$input attr-dict `:` type($input)"
 
 
@@ -222,7 +245,13 @@ class AddPlainOp(IRDLOperation):
     rhs = operand_def(NewLWEPlaintextType)
     result = result_def(NewLWECiphertextType)
 
-    traits = traits_def(Pure())
+    traits = traits_def(
+        Pure(),
+        Commutative(),
+        IsCiphertextPlaintextOp(),  # Ensures exactly one ciphertext + one plaintext
+        AllCiphertextTypesMatch(),  # Ciphertext operand matches result type
+        SameOperandsAndResultPlaintextTypes(),  # Derived plaintext types match
+    )
 
     assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
 
@@ -260,7 +289,11 @@ class MulPlainOp(IRDLOperation):
     rhs = operand_def(NewLWEPlaintextType)
     result = result_def(NewLWECiphertextType)
 
-    traits = traits_def(Pure())
+    traits = traits_def(
+        Pure(),
+        Commutative(),
+        IsCiphertextPlaintextOp(),  # Ensures one ciphertext + one plaintext
+    )
 
     assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
 
@@ -281,7 +314,11 @@ class RelinearizeOp(IRDLOperation):
     from_basis = prop_def(DenseArrayBase)
     to_basis = prop_def(DenseArrayBase)
 
-    traits = traits_def(Pure())
+    traits = traits_def(
+        Pure(),
+        SameOperandsAndResultRings(),
+        SameOperandsAndResultPlaintextTypes(),
+    )
     irdl_options = [ParsePropInAttrDict()]
 
     assembly_format = "$input attr-dict `:` type($input) `->` type($result)"
@@ -326,7 +363,10 @@ class RotateOp(IRDLOperation):
 
     offset = prop_def(IntegerAttr)
 
-    traits = traits_def(Pure())
+    traits = traits_def(
+        Pure(),
+        AllTypesMatch(),  # Input and output types must be identical
+    )
     irdl_options = [ParsePropInAttrDict()]
 
     # Now the result type can be inferred from the input type
