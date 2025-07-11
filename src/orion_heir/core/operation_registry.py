@@ -9,7 +9,7 @@ from typing import Dict, Callable, Any, Protocol, List, Optional
 from abc import ABC, abstractmethod
 
 from xdsl.ir import SSAValue, Block
-from xdsl.dialects.builtin import IntegerAttr, IntegerType, FloatAttr, f32
+from xdsl.dialects.builtin import IntegerAttr, IntegerType, FloatAttr, i32, f32, DenseArrayBase
 
 from .translator import FHEOperation
 
@@ -60,7 +60,7 @@ class CKKSArithmeticHandler(BaseOperationHandler):
         from ..dialects.ckks import AddOp, SubOp, MulOp
         
         # Determine operands
-        if operation.op_type in ['add', 'sub', 'mul']:
+        if operation.op_type in ['add', 'sub']:
             # Binary operations - need second operand
             second_operand = self._get_second_operand(operation, constants)
             if second_operand is None:
@@ -99,6 +99,53 @@ class CKKSArithmeticHandler(BaseOperationHandler):
                         return constants[ref_name]
         return None
 
+
+class CKKSMulHandler(BaseOperationHandler):
+    """Handler for CKKS multiplication operations with automatic relinearization."""
+    
+    def handle(self, 
+              operation: FHEOperation,
+              current_value: SSAValue,
+              block: Block,
+              constants: Dict[str, SSAValue],
+              type_builder: Any) -> SSAValue:
+        """Handle CKKS multiplication with relinearization."""
+        from ..dialects.ckks import MulOp, RelinearizeOp
+        from xdsl.dialects.builtin import DenseArrayBase
+        
+        # Get the other operand (could be ciphertext or plaintext)
+        if operation.args and len(operation.args) > 0:
+            other_operand = constants.get(f"arg_{hash(operation.args[0])}", operation.args[0])
+        else:
+            # This is a self-multiplication (e.g., for quadratic activation)
+            other_operand = current_value
+        
+        # Determine result type with increased dimension
+        result_type = type_builder.infer_result_type_with_relinearization(
+            'mul', current_value.type, other_operand.type if hasattr(other_operand, 'type') else current_value.type
+        )
+        
+        # Create multiplication operation
+        mul_op = MulOp(
+            operands=[current_value, other_operand],
+            result_types=[result_type]
+        )
+        block.add_op(mul_op)
+        
+        # Add relinearization to reduce dimension back to 2
+        relin_result_type = type_builder.create_relinearized_ciphertext_type(mul_op.results[0].type) 
+
+        relin_op = RelinearizeOp(
+            operands=[mul_op.results[0]],
+            result_types=[relin_result_type],
+            properties={
+                "from_basis": DenseArrayBase.create_dense_int(i32, [0, 1, 2]),
+                "to_basis": DenseArrayBase.create_dense_int(i32, [0, 1])
+            }
+        )
+        block.add_op(relin_op)
+        
+        return relin_op.results[0]
 
 
 class CKKSPlaintextHandler(BaseOperationHandler):
@@ -202,7 +249,7 @@ class CKKSRotationHandler(BaseOperationHandler):
 
 
 class LWEEncodingHandler(BaseOperationHandler):
-    """Simple handler for encoding operations."""
+    """Handler for encoding operations with correct application data."""
     
     def handle(self, 
               operation: FHEOperation,
@@ -210,9 +257,13 @@ class LWEEncodingHandler(BaseOperationHandler):
               block: Block,
               constants: Dict[str, SSAValue],
               type_builder: Any) -> SSAValue:
-        """Handle encoding operations."""
-        from ..dialects.lwe import RLWEEncodeOp
-        from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, TensorType, f32
+        """Handle encoding operations with matching application data."""
+        from ..dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
+        from ..dialects.polynomial import RingAttr, PolynomialAttr
+        from xdsl.dialects.builtin import (
+            DenseIntOrFPElementsAttr, TensorType, f32, StringAttr,
+            IntegerAttr, IntegerType
+        )
         from xdsl.dialects.arith import ConstantOp
         import torch
         import numpy as np
@@ -227,40 +278,16 @@ class LWEEncodingHandler(BaseOperationHandler):
         tensor_arg = operation.args[0]
         print(f"    Encoding tensor with shape: {tensor_arg.shape}")
         
-        # Convert tensor to constant
-        if isinstance(tensor_arg, torch.Tensor):
-            tensor_np = tensor_arg.detach().cpu().numpy().astype(np.float32)
-        else:
-            tensor_np = np.array(tensor_arg, dtype=np.float32)
-        
-        tensor_shape = list(tensor_np.shape)
-        tensor_type = TensorType(f32, tensor_shape)
-        flat_data = [float(x) for x in tensor_np.flatten()]
-        
-        dense_attr = DenseIntOrFPElementsAttr.create_dense_float(tensor_type, flat_data)
-        const_op = ConstantOp(dense_attr, tensor_type)
-        block.add_op(const_op)
-        
-        # Encode to plaintext
-        plaintext_type = type_builder.get_default_plaintext_type()
-        encode_op = RLWEEncodeOp(
-            operands=[const_op.results[0]],
-            result_types=[plaintext_type],
-            attributes={
-                "encoding": type_builder.base_encoding,
-                "ring": type_builder.ring_f32
-            }
-        )
-        block.add_op(encode_op)
-        
-        print(f"✅ Created encoding operations")
-        
-        # Store result for future reference
-        if operation.result_var:
-            constants[operation.result_var] = encode_op.results[0]
-        
-        return encode_op.results[0]
+        encoded_plaintext = type_builder.create_slot_based_plaintext_encoding(block, tensor_arg) 
 
+        slots = getattr(type_builder.scheme_params, 'slots', 4096)
+        print(f"✅ Created slot-based encoding (padded to {slots} slots)")
+        
+        # Store result
+        if operation.result_var:
+            constants[operation.result_var] = encoded_plaintext
+        
+        return encoded_plaintext
 
 
 
@@ -283,7 +310,7 @@ class OperationRegistry:
         # CKKS arithmetic operations
         self.handlers['add'] = CKKSArithmeticHandler(AddOp)
         self.handlers['sub'] = CKKSArithmeticHandler(SubOp)
-        self.handlers['mul'] = CKKSArithmeticHandler(MulOp)
+        self.handlers['mul'] = CKKSMulHandler()
         
         # CKKS plaintext operations
         self.handlers['add_plain'] = CKKSPlaintextHandler(AddPlainOp)
@@ -707,17 +734,36 @@ class CKKSQuadHandler(BaseOperationHandler):
               constants: Dict[str, SSAValue],
               type_builder: Any) -> SSAValue:
         """Handle quadratic activation: x * x."""
-        from ..dialects.ckks import MulOp
+        from ..dialects.ckks import MulOp, RelinearizeOp
         
         print(f"🔢 Processing quadratic activation: {operation.result_var}")
+
+        result_type = type_builder.infer_result_type_with_relinearization(
+            'mul', current_value.type, current_value.type
+        )
         
         # Create self-multiplication operation
         quad_op = MulOp(
             operands=[current_value, current_value],  # x * x
-            result_types=[current_value.type]
+            result_types=[result_type]
         )
         
         block.add_op(quad_op)
         print(f"✅ Created ckks.mul operation (x * x)")
         
-        return quad_op.results[0]
+        # Add relinearization to reduce dimension back to 2
+        relin_result_type = type_builder.create_relinearized_ciphertext_type(quad_op.results[0].type) 
+
+        relin_op = RelinearizeOp(
+            operands=[quad_op.results[0]],
+            result_types=[relin_result_type],
+            properties={
+                "from_basis": DenseArrayBase.create_dense_int(i32, [0, 1, 2]),
+                "to_basis": DenseArrayBase.create_dense_int(i32, [0, 1])
+            }
+        )
+        block.add_op(relin_op)
+        
+        print(f"✅ Created ckks.mul + ckks.relinearize operations (x * x)")
+        
+        return relin_op.results[0]

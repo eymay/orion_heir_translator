@@ -93,19 +93,13 @@ class ConstantManager:
     def _create_scalar_constant(self, block: Block, value: float) -> SSAValue:
         """Create a constant operation for a scalar value."""
         # Create a 1D tensor with single element
-        tensor_type = TensorType(f32, [1])
+        import numpy as np
         
-        # Ensure we have a proper float
-        float_value = float(value)
+        padded_data = np.zeros(self.slots, dtype=np.float32)
+        padded_data[0] = float(value)
         
-        dense_attr = DenseIntOrFPElementsAttr.create_dense_float(
-            tensor_type, [float_value]
-        )
-        
-        const_op = ConstantOp(dense_attr, tensor_type)
-        block.add_op(const_op)
-        
-        return const_op.results[0]
+        return self.type_builder.create_padded_tensor_constant(block, padded_data, self.slots)
+    
     
     def create_plaintext_encoding(self, block: Block, constant_value: SSAValue) -> SSAValue:
         """
@@ -113,36 +107,7 @@ class ConstantManager:
         
         This encodes a constant tensor into the LWE plaintext space.
         """
-        from ..dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
-        from ..dialects.polynomial import RingAttr, PolynomialAttr
-        from xdsl.dialects.builtin import f32, IntegerAttr, IntegerType
-        
-        # Get the plaintext type
-        pt_type = self.type_builder.get_default_plaintext_type()
-        
-        # Create encoding attribute
-        encoding_attr = InverseCanonicalEncodingAttr([
-            IntegerAttr(40, IntegerType(32))  # Default scale
-        ])
-        
-        # Create ring attribute
-        poly_attr = PolynomialAttr([
-            constant_value.type  # Use the tensor type
-        ])
-        ring_attr = RingAttr([f32, poly_attr])
-        
-        # Create encoding operation with required attributes
-        encode_op = RLWEEncodeOp(
-            operands=[constant_value],
-            result_types=[pt_type],
-            attributes={
-                "encoding": encoding_attr,
-                "ring": ring_attr
-            }
-        )
-        
-        block.add_op(encode_op)
-        return encode_op.results[0]
+        return self.type_builder.create_slot_based_plaintext_encoding(block, tensor_value)
     
     def get_or_create_constant(self, block: Block, key: str, value: Any) -> SSAValue:
         """Get an existing constant or create a new one."""
