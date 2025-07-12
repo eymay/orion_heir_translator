@@ -567,7 +567,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         attributes = self._create_block_attributes(block_key, diagonal_indices, orion_metadata)
         
         # Create the linear transform operation
-        result_type = input_tensor.type
+        result_type = type_builder.infer_plaintext_result_type('mul_plain', input_tensor.type, encode_op.results[0].type)
         linear_transform_op = LinearTransformOp(
             operands=[input_tensor, encode_op.results[0]],
             result_types=[result_type],
