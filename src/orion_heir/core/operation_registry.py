@@ -9,7 +9,7 @@ from typing import Dict, Callable, Any, Protocol, List, Optional
 from abc import ABC, abstractmethod
 
 from xdsl.ir import SSAValue, Block
-from xdsl.dialects.builtin import IntegerAttr, IntegerType, FloatAttr, i32, f32, DenseArrayBase
+from xdsl.dialects.builtin import IntegerAttr, IntegerType, FloatAttr, i32, f64, DenseArrayBase
 
 from .translator import FHEOperation
 
@@ -282,7 +282,7 @@ class LWEEncodingHandler(BaseOperationHandler):
         from ..dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
         from ..dialects.polynomial import RingAttr, PolynomialAttr
         from xdsl.dialects.builtin import (
-            DenseIntOrFPElementsAttr, TensorType, f32, StringAttr,
+            DenseIntOrFPElementsAttr, TensorType, f64, StringAttr,
             IntegerAttr, IntegerType
         )
         from xdsl.dialects.arith import ConstantOp
@@ -394,7 +394,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
               type_builder: Any) -> SSAValue:
         """Handle CKKS linear transform with block-based diagonal processing."""
         from ..dialects.ckks import LinearTransformOp
-        from xdsl.dialects.builtin import IntegerAttr, IntegerType, ArrayAttr, FloatAttr, f32, StringAttr
+        from xdsl.dialects.builtin import IntegerAttr, IntegerType, ArrayAttr, FloatAttr, f64, StringAttr
         
         print(f"🔧 LinearTransform handler: Processing Orion block-based linear transform")
         print(f"    Operation metadata: {operation.metadata}")
@@ -492,7 +492,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         """Create a single linear transform operation for one block."""
         from ..dialects.ckks import LinearTransformOp
         from ..dialects.lwe import RLWEEncodeOp
-        from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, TensorType, f32
+        from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, TensorType, f64
         from xdsl.dialects.arith import ConstantOp
         
         row, col = block_key
@@ -544,7 +544,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         # Create constant for stacked diagonal data
         total_elements = len(diagonal_indices) * slots
         tensor_shape = [len(diagonal_indices), slots]
-        tensor_type = TensorType(f32, tensor_shape)
+        tensor_type = TensorType(f64, tensor_shape)
         
         dense_attr = DenseIntOrFPElementsAttr.create_dense_float(tensor_type, stacked_diagonal_data)
         const_op = ConstantOp(dense_attr, tensor_type)
@@ -557,7 +557,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
             result_types=[plaintext_type],
             attributes={
                 "encoding": type_builder.base_encoding,
-                "ring": type_builder.ring_f32
+                "ring": type_builder.ring_f64
             }
         )
         block.add_op(encode_op)
@@ -649,7 +649,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
             attributes['slots'] = IntegerAttr(orion_metadata['slots'], IntegerType(32))
         
         if 'bsgs_ratio' in orion_metadata:
-            attributes['bsgs_ratio'] = FloatAttr(orion_metadata['bsgs_ratio'], f32)
+            attributes['bsgs_ratio'] = FloatAttr(orion_metadata['bsgs_ratio'], f64)
         
         if 'orion_level' in orion_metadata:
             attributes['orion_level'] = IntegerAttr(orion_metadata['orion_level'], IntegerType(32))
@@ -714,7 +714,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
     
     def _create_attributes_from_metadata(self, orion_metadata: Dict, operation: FHEOperation) -> Dict:
         """Create MLIR attributes from Orion metadata."""
-        from xdsl.dialects.builtin import IntegerAttr, IntegerType, ArrayAttr, FloatAttr, f32, StringAttr
+        from xdsl.dialects.builtin import IntegerAttr, IntegerType, ArrayAttr, FloatAttr, f64, StringAttr
         
         attributes = {}
         
@@ -726,7 +726,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
             attributes['layer_name'] = StringAttr(orion_metadata['layer'])
         
         if 'bsgs_ratio' in orion_metadata:
-            attributes['bsgs_ratio'] = FloatAttr(orion_metadata['bsgs_ratio'], f32)
+            attributes['bsgs_ratio'] = FloatAttr(orion_metadata['bsgs_ratio'], f64)
         
         if 'baby_step_size' in orion_metadata:
             attributes['baby_step_size'] = IntegerAttr(orion_metadata['baby_step_size'], IntegerType(32))

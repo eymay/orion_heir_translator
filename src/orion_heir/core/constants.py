@@ -10,7 +10,7 @@ import torch
 import numpy as np
 
 from xdsl.ir import SSAValue, Block
-from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, TensorType, f32
+from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, TensorType, f64
 from xdsl.dialects.arith import ConstantOp
 
 from .types import FHEOperation
@@ -66,7 +66,7 @@ class ConstantManager:
         
         # Get the tensor shape
         tensor_shape = list(tensor_np.shape)
-        tensor_type = TensorType(f32, tensor_shape)
+        tensor_type = TensorType(f64, tensor_shape)
         
         # Flatten the data and convert to Python floats
         flat_data = tensor_np.flatten()

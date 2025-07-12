@@ -9,7 +9,7 @@ from typing import Dict, List, Any, Optional
 
 from xdsl.dialects.builtin import (
     IntegerAttr, ArrayAttr, StringAttr, TensorType, 
-    IntegerType, f32, Block, SSAValue
+    IntegerType, f64, Block, SSAValue
 )
 
 from .types import SchemeParameters
@@ -56,7 +56,7 @@ class TypeBuilder:
         
         # Build rings
         self.ring_rns = RingAttr([self.rns_type, self.poly_attr])
-        self.ring_f32 = RingAttr([f32, self.poly_attr])
+        self.ring_f64 = RingAttr([f64, self.poly_attr])
         
         # Build LWE attributes
         self.base_encoding = InverseCanonicalEncodingAttr([
@@ -67,10 +67,10 @@ class TypeBuilder:
         
         # Application data - assuming slots equal to half the ring degree
         slots = getattr(self.scheme_params, 'slots', self.scheme_params.ring_degree/2)
-        self.app_data = ApplicationDataAttr([TensorType(f32, [slots])])
+        self.app_data = ApplicationDataAttr([TensorType(f64, [slots])])
         
         # Plaintext space
-        self.base_pt_space = PlaintextSpaceAttr([self.ring_f32, self.base_encoding])
+        self.base_pt_space = PlaintextSpaceAttr([self.ring_f64, self.base_encoding])
         
         # Ciphertext space
         self.ct_space = CiphertextSpaceAttr([
@@ -130,7 +130,7 @@ class TypeBuilder:
             IntegerAttr(getattr(self.scheme_params, 'log_scale', 40), IntegerType(32))
         ])
         
-        pt_space = PlaintextSpaceAttr([self.ring_f32, encoding])
+        pt_space = PlaintextSpaceAttr([self.ring_f64, encoding])
         
         return NewLWEPlaintextType([app_data, pt_space])
 
@@ -143,7 +143,7 @@ class TypeBuilder:
         """
         from ..dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
         from ..dialects.polynomial import RingAttr, PolynomialAttr
-        from xdsl.dialects.builtin import f32, IntegerAttr, IntegerType
+        from xdsl.dialects.builtin import f64, IntegerAttr, IntegerType
         
         # Get the actual tensor type from the constant
         tensor_type = constant_value.type
@@ -160,7 +160,7 @@ class TypeBuilder:
         poly_attr = PolynomialAttr([
             StringAttr(f"1+x**{self.type_builder.scheme_params.ring_degree}")
         ])
-        ring_attr = RingAttr([f32, poly_attr])
+        ring_attr = RingAttr([f64, poly_attr])
         
         # Create encoding operation with matching types
         encode_op = RLWEEncodeOp(
@@ -265,7 +265,7 @@ class TypeBuilder:
 
     def create_padded_tensor_constant(self, block: Block, tensor_value: Any, target_slots: int) -> SSAValue:
         """Create a tensor constant padded to the target slot count."""
-        from xdsl.dialects.builtin import TensorType, f32, DenseIntOrFPElementsAttr
+        from xdsl.dialects.builtin import TensorType, f64, DenseIntOrFPElementsAttr
         from xdsl.dialects.arith import ConstantOp
         import torch
         import numpy as np
@@ -293,7 +293,7 @@ class TypeBuilder:
             print(f"    Warning: Truncating tensor from {source_size} to {target_slots}")
         
         # Create tensor type with slot count shape
-        tensor_type = TensorType(f32, [target_slots])
+        tensor_type = TensorType(f64, [target_slots])
         float_data = [float(x) for x in padded_data]
         
         # Create constant operation
@@ -307,7 +307,7 @@ class TypeBuilder:
         """Create a plaintext encoding with slot-based padding."""
         from ..dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
         from ..dialects.polynomial import RingAttr, PolynomialAttr
-        from xdsl.dialects.builtin import f32, IntegerAttr, IntegerType, StringAttr
+        from xdsl.dialects.builtin import f64, IntegerAttr, IntegerType, StringAttr
         
         # Get slot count from scheme parameters
         slots = getattr(self.scheme_params, 'slots', 4096)
@@ -334,7 +334,7 @@ class TypeBuilder:
         poly_attr = PolynomialAttr([
             StringAttr(f"1+x**{self.scheme_params.ring_degree}")
         ])
-        ring_attr = RingAttr([f32, poly_attr])
+        ring_attr = RingAttr([f64, poly_attr])
         
         # Create encoding operation
         encode_op = RLWEEncodeOp(
@@ -395,7 +395,7 @@ class TypeBuilder:
             IntegerAttr(log_scale, IntegerType(32))
         ])
         
-        pt_space = PlaintextSpaceAttr([self.ring_f32, encoding])
+        pt_space = PlaintextSpaceAttr([self.ring_f64, encoding])
         
         return NewLWEPlaintextType([
             self.app_data,
