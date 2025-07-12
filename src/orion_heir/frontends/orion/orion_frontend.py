@@ -13,6 +13,78 @@ from pathlib import Path
 from ...core.types import FHEOperation, FrontendInterface, SchemeParameters
 from .scheme_params import OrionSchemeParameters
 
+def fix_encode_operations(module, type_builder):
+    """
+    Simplest approach: collect info, then rebuild operations that need fixing.
+    """
+    from ...dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
+    from ...dialects.ckks import AddPlainOp, SubPlainOp, MulPlainOp
+    from xdsl.dialects.builtin import IntegerAttr, IntegerType
+    
+    print("🔧 Starting simple encode fix pass...")
+    
+    # Collect all the fixes needed
+    fixes_needed = []
+    
+    for op in module.walk():
+        if isinstance(op, (AddPlainOp, SubPlainOp, MulPlainOp)):
+            plaintext_operand = op.rhs
+            
+            if isinstance(plaintext_operand.owner, RLWEEncodeOp):
+                encode_op = plaintext_operand.owner
+                ct_scale = type_builder.get_scaling_factor(op.lhs.type)
+                pt_scale = type_builder.get_scaling_factor(plaintext_operand.type)
+                
+                required_scale = ct_scale if isinstance(op, (AddPlainOp, SubPlainOp)) else getattr(type_builder.scheme_params, 'log_scale', 40)
+                
+                if pt_scale != required_scale:
+                    fixes_needed.append({
+                        'encode_op': encode_op,
+                        'required_scale': required_scale,
+                        'ciphertext_type': op.lhs.type
+                    })
+    
+    # Apply fixes by creating new operations and swapping them
+    for fix in fixes_needed:
+        encode_op = fix['encode_op']
+        required_scale = fix['required_scale']
+        
+        # Get the parent block
+        parent_block = encode_op.parent
+        
+        # Create new type and attributes
+        new_pt_type = type_builder.create_plaintext_type_with_scale(
+            log_scale=required_scale,
+            match_ciphertext_type=fix['ciphertext_type']
+        )
+        
+        new_encoding_attr = InverseCanonicalEncodingAttr([
+            IntegerAttr(required_scale, IntegerType(32))
+        ])
+        
+        # Create new operation
+        new_encode_op = RLWEEncodeOp(
+            operands=encode_op.operands,
+            result_types=[new_pt_type],
+            attributes={
+                "encoding": new_encoding_attr,
+                "ring": encode_op.attributes["ring"]
+            }
+        )
+        
+        # Insert before old operation
+        parent_block.insert_op_before(new_encode_op, encode_op)
+        
+        # Replace uses
+        encode_op.results[0].replace_by(new_encode_op.results[0])
+        
+        # Remove old operation
+        parent_block.erase_op(encode_op)
+        
+        print(f"    ✅ Fixed encode operation scaling factor: {required_scale}")
+    
+    print(f"🎉 Simple fix pass completed. Fixed {len(fixes_needed)} operations.")
+    return len(fixes_needed) > 0
 
 class OrionFrontend(FrontendInterface):
     """

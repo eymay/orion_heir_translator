@@ -16,6 +16,7 @@ from .types import FHEOperation, SchemeParameters, FrontendInterface
 from .operation_registry import OperationRegistry
 from .type_builder import TypeBuilder
 from .constants import ConstantManager
+from ..frontends.orion.orion_frontend import fix_encode_operations
 
 
 class GenericTranslator:
@@ -72,7 +73,11 @@ class GenericTranslator:
         # Create function containing the operations
         func = self._create_function(operations, type_builder, function_name)
         module.body.block.add_op(func)
-        
+        fixes_applied = fix_encode_operations(module, type_builder)
+    
+        if fixes_applied:
+            print("✅ Encode operations have been fixed for proper scaling factors")
+    
         print("✅ Translation completed")
         return module
     
