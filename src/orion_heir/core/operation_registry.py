@@ -136,17 +136,18 @@ class CKKSMulHandler(BaseOperationHandler):
         )
         block.add_op(relin_op)
         
+        return relin_op.results[0]
         # 3. Add rescale operation to reduce scaling factor back to original
-        rescaled_type = type_builder.create_rescaled_type(relin_op.results[0].type, original_scale)
-        
-        rescale_op = RescaleOp(
-            operands=[relin_op.results[0]],
-            result_types=[rescaled_type],
-            properties={"to_ring": type_builder.get_next_modulus_ring()}
-        )
-        block.add_op(rescale_op)
-        
-        return rescale_op.results[0]
+        # rescaled_type = type_builder.create_rescaled_type(relin_op.results[0].type, original_scale)
+        # 
+        # rescale_op = RescaleOp(
+        #     operands=[relin_op.results[0]],
+        #     result_types=[rescaled_type],
+        #     properties={"to_ring": type_builder.get_next_modulus_ring(relin_op.results[0].type)}
+        # )
+        # block.add_op(rescale_op)
+        # 
+        # return rescale_op.results[0]
 
 class CKKSPlaintextHandler(BaseOperationHandler):
     """Handler for CKKS plaintext operations."""
@@ -792,13 +793,14 @@ class CKKSQuadHandler(BaseOperationHandler):
         block.add_op(relin_op)
         
         print(f"✅ Created ckks.mul + ckks.relinearize operations (x * x)")
-        rescaled_type = type_builder.create_rescaled_type(relin_op.results[0].type, original_scale)
+        return relin_op.results[0]
+        # rescaled_type = type_builder.create_rescaled_type(relin_op.results[0].type, original_scale)
+        # 
+        # rescale_op = RescaleOp(
+        #     operands=[relin_op.results[0]],
+        #     result_types=[rescaled_type],
+        #     properties={"to_ring": type_builder.get_next_modulus_ring(relin_op.results[0].type)}
+        # )
+        # block.add_op(rescale_op)
         
-        rescale_op = RescaleOp(
-            operands=[relin_op.results[0]],
-            result_types=[rescaled_type],
-            properties={"to_ring": type_builder.get_next_modulus_ring()}
-        )
-        block.add_op(rescale_op)
-        
-        return rescale_op.results[0]
+        # return rescale_op.results[0]
