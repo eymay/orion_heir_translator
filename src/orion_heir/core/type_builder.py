@@ -175,6 +175,94 @@ class TypeBuilder:
         block.add_op(encode_op)
         return encode_op.results[0]
 
+
+    def get_scaling_factor(self, type_obj: Any) -> int:
+        """Extract scaling factor from plaintext or ciphertext type."""
+        from ..dialects.lwe import (
+            NewLWEPlaintextType, NewLWECiphertextType, 
+            InverseCanonicalEncodingAttr, FullCRTPackingEncodingAttr
+        )
+        
+        encoding = None
+        if isinstance(type_obj, NewLWEPlaintextType):
+            plaintext_space = type_obj.parameters[1]  # PlaintextSpaceAttr
+            encoding = plaintext_space.encoding
+        elif isinstance(type_obj, NewLWECiphertextType):
+            plaintext_space = type_obj.parameters[1]  # PlaintextSpaceAttr  
+            encoding = plaintext_space.encoding
+        
+        if encoding is None:
+            return 0
+        
+        if isinstance(encoding, InverseCanonicalEncodingAttr):
+            return encoding.scaling_factor.value.data
+        elif isinstance(encoding, FullCRTPackingEncodingAttr):
+            return encoding.scaling_factor.value.data
+        else:
+            return 0
+
+    def create_rescaled_type(self, input_type: Any, target_scale: int) -> Any:
+        """Create a new type with rescaled scaling factor."""
+        from ..dialects.lwe import (
+            NewLWECiphertextType, PlaintextSpaceAttr, 
+            InverseCanonicalEncodingAttr, FullCRTPackingEncodingAttr
+        )
+        from xdsl.dialects.builtin import IntegerAttr, IntegerType
+        
+        if not isinstance(input_type, NewLWECiphertextType):
+            return input_type
+        
+        # Extract all components
+        app_data = input_type.parameters[0]
+        old_pt_space = input_type.parameters[1]
+        ct_space = input_type.parameters[2]
+        key = input_type.parameters[3]
+        modulus_chain = input_type.parameters[4]
+        
+        # Create new encoding with target scale
+        old_encoding = old_pt_space.encoding
+        if isinstance(old_encoding, InverseCanonicalEncodingAttr):
+            new_encoding = InverseCanonicalEncodingAttr([
+                IntegerAttr(target_scale, IntegerType(32))
+            ])
+        elif isinstance(old_encoding, FullCRTPackingEncodingAttr):
+            new_encoding = FullCRTPackingEncodingAttr([
+                IntegerAttr(target_scale, IntegerType(32))
+            ])
+        else:
+            new_encoding = old_encoding
+        
+        # Create new plaintext space
+        new_pt_space = PlaintextSpaceAttr([old_pt_space.ring, new_encoding])
+        # CRITICAL: Create new ciphertext space with REDUCED ring (drop one modulus)
+        old_ring = old_ct_space.ring
+        new_ring = self._create_reduced_ring(old_ring)
+        
+        new_ct_space = CiphertextSpaceAttr([
+            new_ring,
+            old_ct_space.encryption_type,
+            old_ct_space.size
+        ])
+        
+        # CRITICAL: Create new modulus chain with reduced current level
+        old_current = old_modulus_chain.current.value.data
+        new_current = old_current - 1  # Drop one level
+        
+        new_modulus_chain = ModulusChainAttr([
+            old_modulus_chain.elements,  # Same elements array
+            IntegerAttr(new_current, IntegerType(32))  # Reduced current level
+        ])
+        # Return new ciphertext type
+        return NewLWECiphertextType([
+            app_data, new_pt_space, new_ct_space, key, new_modulus_chain
+        ])
+
+    def get_next_modulus_ring(self):
+        """Get the ring for the next modulus level (for rescaling)."""
+        # This would need to be implemented based on your modulus chain structure
+        # For now, return the base ring
+        return self.ring_rns
+
     def create_padded_tensor_constant(self, block: Block, tensor_value: Any, target_slots: int) -> SSAValue:
         """Create a tensor constant padded to the target slot count."""
         from xdsl.dialects.builtin import TensorType, f32, DenseIntOrFPElementsAttr

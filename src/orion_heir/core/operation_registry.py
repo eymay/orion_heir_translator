@@ -101,40 +101,31 @@ class CKKSArithmeticHandler(BaseOperationHandler):
 
 
 class CKKSMulHandler(BaseOperationHandler):
-    """Handler for CKKS multiplication operations with automatic relinearization."""
+    """Handler for CKKS multiplication operations with automatic relinearization and rescaling."""
     
-    def handle(self, 
-              operation: FHEOperation,
-              current_value: SSAValue,
-              block: Block,
-              constants: Dict[str, SSAValue],
-              type_builder: Any) -> SSAValue:
-        """Handle CKKS multiplication with relinearization."""
-        from ..dialects.ckks import MulOp, RelinearizeOp
+    def handle(self, operation: FHEOperation, current_value: SSAValue, block: Block, constants: Dict[str, SSAValue], type_builder: Any) -> SSAValue:
+        """Handle CKKS multiplication with relinearization AND rescaling."""
+        from ..dialects.ckks import MulOp, RelinearizeOp, RescaleOp
         from xdsl.dialects.builtin import DenseArrayBase
         
-        # Get the other operand (could be ciphertext or plaintext)
+        # Get the other operand
         if operation.args and len(operation.args) > 0:
             other_operand = constants.get(f"arg_{hash(operation.args[0])}", operation.args[0])
         else:
-            # This is a self-multiplication (e.g., for quadratic activation)
             other_operand = current_value
         
-        # Determine result type with increased dimension
-        result_type = type_builder.infer_result_type(
-            'mul', current_value.type, other_operand.type if hasattr(other_operand, 'type') else current_value.type
-        )
+        # Store original scaling factor
+        original_scale = type_builder.get_scaling_factor(current_value.type)
         
-        # Create multiplication operation
-        mul_op = MulOp(
-            operands=[current_value, other_operand],
-            result_types=[result_type]
-        )
+        # 1. Create multiplication operation (doubles scaling factor)
+        result_type = type_builder.infer_result_type('mul', current_value.type, other_operand.type if hasattr(other_operand, 'type') else current_value.type)
+        
+        mul_op = MulOp(operands=[current_value, other_operand], result_types=[result_type])
         block.add_op(mul_op)
         
-        # Add relinearization to reduce dimension back to 2
+        # 2. Add relinearization to reduce dimension back to 2
         relin_result_type = type_builder.create_ciphertext_type_with_dimension(2, preserve_from_type=mul_op.results[0].type)
-
+        
         relin_op = RelinearizeOp(
             operands=[mul_op.results[0]],
             result_types=[relin_result_type],
@@ -145,8 +136,17 @@ class CKKSMulHandler(BaseOperationHandler):
         )
         block.add_op(relin_op)
         
-        return relin_op.results[0]
-
+        # 3. Add rescale operation to reduce scaling factor back to original
+        rescaled_type = type_builder.create_rescaled_type(relin_op.results[0].type, original_scale)
+        
+        rescale_op = RescaleOp(
+            operands=[relin_op.results[0]],
+            result_types=[rescaled_type],
+            properties={"to_ring": type_builder.get_next_modulus_ring()}
+        )
+        block.add_op(rescale_op)
+        
+        return rescale_op.results[0]
 
 class CKKSPlaintextHandler(BaseOperationHandler):
     """Handler for CKKS plaintext operations."""
@@ -179,6 +179,27 @@ class CKKSPlaintextHandler(BaseOperationHandler):
         )
         
         block.add_op(op_instance)
+
+        if operation.op_type == 'mul_plain':
+            # The mul_plain result has doubled scaling factor
+            # Need to rescale back to original scaling factor
+            
+            # Get target scaling factor (usually the original ciphertext scaling)
+            original_scale = type_builder.get_scaling_factor(current_value.type)
+            
+            # Create rescale operation
+            rescale_result_type = type_builder.create_rescaled_type(
+                mul_plain_result.type, original_scale
+            )
+            
+            rescale_op = RescaleOp(
+                operands=[mul_plain_result],
+                result_types=[rescale_result_type]
+            )
+            block.add_op(rescale_op)
+        
+            return rescale_op.results[0]
+
         print(f"✅ Created {self.op_class.name} operation")
         return op_instance.results[0]
     
@@ -739,10 +760,11 @@ class CKKSQuadHandler(BaseOperationHandler):
               constants: Dict[str, SSAValue],
               type_builder: Any) -> SSAValue:
         """Handle quadratic activation: x * x."""
-        from ..dialects.ckks import MulOp, RelinearizeOp
+        from ..dialects.ckks import MulOp, RelinearizeOp, RescaleOp
         
         print(f"🔢 Processing quadratic activation: {operation.result_var}")
 
+        original_scale = type_builder.get_scaling_factor(current_value.type)
         result_type = type_builder.infer_result_type_with_relinearization(
             'mul', current_value.type, current_value.type
         )
@@ -770,5 +792,13 @@ class CKKSQuadHandler(BaseOperationHandler):
         block.add_op(relin_op)
         
         print(f"✅ Created ckks.mul + ckks.relinearize operations (x * x)")
+        rescaled_type = type_builder.create_rescaled_type(relin_op.results[0].type, original_scale)
         
-        return relin_op.results[0]
+        rescale_op = RescaleOp(
+            operands=[relin_op.results[0]],
+            result_types=[rescaled_type],
+            properties={"to_ring": type_builder.get_next_modulus_ring()}
+        )
+        block.add_op(rescale_op)
+        
+        return rescale_op.results[0]
