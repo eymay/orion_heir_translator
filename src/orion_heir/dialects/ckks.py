@@ -6,7 +6,7 @@ Provides CKKS homomorphic encryption operations and attributes
 from collections.abc import Sequence
 from typing import ClassVar
 
-from xdsl.dialects.builtin import IntegerAttr, IndexType, ArrayAttr, DenseArrayBase
+from xdsl.dialects.builtin import IntegerAttr, FloatAttr, IndexType, ArrayAttr, DenseArrayBase, f64
 from xdsl.ir import Attribute, Dialect, ParametrizedAttribute, SSAValue
 from xdsl.irdl import (
     BaseAttr,
@@ -415,6 +415,67 @@ class LinearTransformOp(IRDLOperation):
     traits = traits_def(Pure())
     
     assembly_format = "$input `,` $weights attr-dict `:` `(` type($input) `,` type($weights) `)` `->` type($result)"
+
+
+@irdl_op_definition
+class ChebyshevOp(IRDLOperation):
+    """
+    CKKS Chebyshev polynomial evaluation operation.
+    
+    Evaluates a Chebyshev polynomial series on a ciphertext using pre-computed
+    coefficients. This operation directly maps to OpenFHE's EvalChebyshevSeries.
+    
+    Syntax:
+    ```mlir
+    %result = ckks.chebyshev %input {
+        coefficients = [1.0, 0.0, -0.33333, 0.0, 0.2, ...],
+        domain_start = -1.0,
+        domain_end = 1.0
+    } : (!ckks.ciphertext) -> !ckks.ciphertext
+    ```
+    
+    Attributes:
+    - coefficients: Array of Chebyshev polynomial coefficients (required)
+    - domain_start: Start of approximation domain (default: -1.0)  
+    - domain_end: End of approximation domain (default: 1.0)
+    
+    The coefficients correspond to the Chebyshev series:
+    f(x) = c₀T₀(x) + c₁T₁(x) + c₂T₂(x) + ... + cₙTₙ(x)
+    
+    where Tᵢ(x) are Chebyshev polynomials of the first kind.
+    """
+    
+    name = "ckks.chebyshev"
+    
+    # Input ciphertext to evaluate polynomial on
+    input = operand_def(NewLWECiphertextType)
+    
+    # Chebyshev polynomial coefficients (required)
+    coefficients = prop_def(ArrayAttr[FloatAttr])
+    
+    # Domain of approximation (optional, defaults to [-1, 1])
+    domain_start = prop_def(FloatAttr, default=FloatAttr(-1.0, f64))
+    domain_end = prop_def(FloatAttr, default=FloatAttr(1.0, f64))
+    
+    # Result ciphertext
+    result = result_def(NewLWECiphertextType)
+    
+    irdl_options = [ParsePropInAttrDict()]
+    assembly_format = "$input attr-dict `:` `(` type($input)  `)` `->` type($result)"
+    
+    @property
+    def degree(self) -> int:
+        """Get the degree of the Chebyshev polynomial."""
+        return len(self.coefficients.data) - 1
+    
+    def get_coefficients(self) -> list[float]:
+        """Get the coefficients as a Python list."""
+        return [float(attr.value) for attr in self.coefficients.data]
+    
+    def get_domain(self) -> tuple[float, float]:
+        """Get the approximation domain as (start, end) tuple."""
+        return (float(self.domain_start.value), float(self.domain_end.value))
+
 
 
 CKKS = Dialect(
