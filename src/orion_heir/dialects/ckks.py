@@ -476,6 +476,31 @@ class ChebyshevOp(IRDLOperation):
         """Get the approximation domain as (start, end) tuple."""
         return (float(self.domain_start.value), float(self.domain_end.value))
 
+@irdl_op_definition
+class BootstrapOp(IRDLOperation):
+    """
+    Bootstrap operation for CKKS ciphertexts.
+    
+    Refreshes a ciphertext by reducing noise and resetting the level.
+    This is essential for deep computations in FHE where noise accumulates
+    and levels are consumed.
+    
+    The bootstrap operation conceptually performs:
+    1. Decrypt the ciphertext (in the encrypted domain)
+    2. Re-encrypt with fresh noise and full level
+    3. Return refreshed ciphertext
+    
+    Example: %refreshed = ckks.bootstrap %input : !lwe.new_lwe_ciphertext -> !lwe.new_lwe_ciphertext
+    """
+    
+    name = "ckks.bootstrap"
+    
+    input = operand_def(NewLWECiphertextType)
+    result = result_def(NewLWECiphertextType)
+    
+    traits = traits_def(Pure())
+    
+    assembly_format = "$input attr-dict `:` type($input) `->` type($result)"
 
 
 CKKS = Dialect(
@@ -493,6 +518,8 @@ CKKS = Dialect(
         RotateOp,
         ExtractOp,
         LinearTransformOp,
+        ChebyshevOp,
+        BootstrapOp,
     ],
     [
         SchemeParamAttr,

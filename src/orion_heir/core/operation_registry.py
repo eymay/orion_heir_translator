@@ -355,6 +355,9 @@ class OperationRegistry:
 
         self.handlers['quad'] = CKKSQuadHandler()
 
+        self.handlers['ckks.chebyshev'] = CKKSChebyshevHandler()
+        self.handlers['bootstrap'] = CKKSBootstrapHandler()
+
     def register_operation(self, op_type: str, handler: OperationHandler):
         """Register a custom operation handler."""
         self.handlers[op_type] = handler
@@ -804,3 +807,88 @@ class CKKSQuadHandler(BaseOperationHandler):
         # block.add_op(rescale_op)
         
         # return rescale_op.results[0]
+
+class CKKSChebyshevHandler(BaseOperationHandler):
+    """Handler for CKKS Chebyshev polynomial evaluation operations."""
+    
+    def handle(self, 
+              operation: FHEOperation,
+              current_value: SSAValue,
+              block: Block,
+              constants: Dict[str, SSAValue],
+              type_builder: Any) -> SSAValue:
+        """Handle Chebyshev polynomial evaluation."""
+        from ..dialects.ckks import ChebyshevOp
+        from xdsl.dialects.builtin import ArrayAttr, FloatAttr, f64
+        
+        # Get coefficients from operation
+        coeffs = operation.kwargs.get('coefficients', [])
+        domain_start = operation.kwargs.get('domain_start', -1.0)
+        domain_end = operation.kwargs.get('domain_end', 1.0)
+        
+        print(f"🔧 Creating Chebyshev operation with {len(coeffs)} coefficients")
+        
+        if not coeffs:
+            print(f"⚠️ No coefficients provided for Chebyshev operation")
+            return current_value
+        
+        # Create coefficient attributes
+        coeff_attrs = [FloatAttr(float(c), f64) for c in coeffs]
+        coeff_array = ArrayAttr(coeff_attrs)
+        
+        # Create result type
+        result_type = type_builder.get_default_ciphertext_type()
+        
+        # Create Chebyshev operation
+        cheby_op = ChebyshevOp(
+            operands=[current_value],
+            result_types=[result_type],
+            properties={
+                'coefficients': coeff_array,
+                'domain_start': FloatAttr(domain_start, f64),
+                'domain_end': FloatAttr(domain_end, f64)
+            }
+        )
+        
+        block.add_op(cheby_op)
+        print(f"✅ Created ckks.chebyshev operation")
+        
+        # Store result
+        if operation.result_var:
+            constants[operation.result_var] = cheby_op.results[0]
+        
+        return cheby_op.results[0]
+
+
+class CKKSBootstrapHandler(BaseOperationHandler):
+    """Handler for CKKS Bootstrap (noise refresh) operations."""
+    
+    def handle(self,
+              operation: FHEOperation,
+              current_value: SSAValue,
+              block: Block,
+              constants: Dict[str, SSAValue],
+              type_builder: Any) -> SSAValue:
+        """Handle bootstrap (refresh) operation."""
+        from ..dialects.ckks import BootstrapOp
+        
+        print(f"🔧 Creating Bootstrap operation")
+        
+        # Create result type (bootstrap typically resets to fresh ciphertext)
+        result_type = type_builder.get_default_ciphertext_type()
+        
+        # Create bootstrap operation
+        bootstrap_op = BootstrapOp(
+            operands=[current_value],
+            result_types=[result_type]
+        )
+        
+        block.add_op(bootstrap_op)
+        print(f"✅ Created ckks.bootstrap operation")
+        
+        # Store result
+        if operation.result_var:
+            constants[operation.result_var] = bootstrap_op.results[0]
+        
+        return bootstrap_op.results[0]
+
