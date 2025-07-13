@@ -508,7 +508,60 @@ class OrionFrontend(FrontendInterface):
             # Generic layer - try to infer operations
             return self._get_generic_operations(layer, layer_name)
 
-    
+
+    def _generate_output_rotations(self, layer: Any, layer_name: str, 
+                              base_result_var: str, level: int) -> List[FHEOperation]:
+        """
+        Generate the correct rotate-and-sum pattern for output rotations.
+        
+        This matches Orion's actual behavior:
+        for i in range(1, self.output_rotations+1):
+            out += out.roll(slots // (2**i))
+        """
+        operations = []
+        
+        if not (hasattr(layer, 'output_rotations') and layer.output_rotations > 0):
+            return operations
+        
+        # Get slots from scheme or default
+        slots = 4096  # Default
+        if hasattr(layer, 'scheme') and hasattr(layer.scheme, 'params'):
+            if hasattr(layer.scheme.params, 'get_slots'):
+                slots = layer.scheme.params.get_slots()
+        
+        current_accumulator = base_result_var
+        
+        for i in range(1, layer.output_rotations + 1):
+            # Calculate rotation offset using Orion's actual formula
+            rotation_offset = slots // (2**i)
+            
+            # Rotation - always from the ORIGINAL base result
+            operations.append(FHEOperation(
+                op_type="rotate",
+                method_name="rotate",
+                args=[rotation_offset],
+                kwargs={"offset": rotation_offset},
+                result_var=f"{layer_name}_rot_{i}",
+                level=level,
+                metadata={'operation': 'output_rotation', 'layer': layer_name, 'rotation_step': i}
+            ))
+            
+            # Accumulation - add this rotation to the current accumulator
+            operations.append(FHEOperation(
+                op_type="add",
+                method_name="add",
+                args=[f"@{current_accumulator}", f"@{layer_name}_rot_{i}"],
+                kwargs={},
+                result_var=f"{layer_name}_acc_{i}",
+                level=level,
+                metadata={'operation': 'rotation_accumulation', 'layer': layer_name}
+            ))
+            
+            # Update accumulator for next iteration
+            current_accumulator = f"{layer_name}_acc_{i}"
+        
+        return operations
+
     def _get_linear_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
         """
         Get operations for a Linear layer with proper diagonal data extraction.
@@ -567,43 +620,20 @@ class OrionFrontend(FrontendInterface):
             metadata=orion_metadata
         ))
         
-        if hasattr(layer, 'output_rotations') and layer.output_rotations > 0:
-            current_result = f"{layer_name}_linear"
-            slots = orion_metadata.get('slots', 4096)
-            
-            for i in range(1, layer.output_rotations + 1):  # Note: starts from 1, not 0
-                # Calculate rotation offset: slots // (2**i)
-                rotation_offset = slots // (2**i)
-                
-                # Rotation - always from the original linear transform result
-                operations.append(FHEOperation(
-                    op_type="rotate",
-                    method_name="rotate",
-                    args=[rotation_offset],
-                    kwargs={"offset": rotation_offset},
-                    result_var=f"{layer_name}_rot_{i}",
-                    level=level,
-                    metadata={'operation': 'output_rotation', 'layer': layer_name}
-                ))
-                
-                # Accumulation - add this rotation to the current result
-                operations.append(FHEOperation(
-                    op_type="add",
-                    method_name="add",
-                    args=[f"@{current_result}", f"@{layer_name}_rot_{i}"],
-                    kwargs={},
-                    result_var=f"{layer_name}_acc_{i}",
-                    level=level,
-                    metadata={'operation': 'rotation_accumulation', 'layer': layer_name}
-                ))
-                
-                # Update current result for next iteration
-                current_result = f"{layer_name}_acc_{i}"
-            
-            # Update the final result variable name for bias addition
-            final_result = current_result
+        rotation_ops = self._generate_output_rotations(layer, layer_name, f"{layer_name}_linear", level)
+        operations.extend(rotation_ops)
+        if rotation_ops:
+            # Find the last accumulator variable
+            final_result = None
+            for op in reversed(rotation_ops):
+                if op.op_type == "add" and "acc" in op.result_var:
+                    final_result = op.result_var
+                    break
+            if not final_result:
+                final_result = f"{layer_name}_linear"
         else:
             final_result = f"{layer_name}_linear"
+
 
         # Bias addition (using the final accumulated result)
         if hasattr(layer, 'bias') and layer.bias is not None:
@@ -794,18 +824,21 @@ class OrionFrontend(FrontendInterface):
             metadata=conv_metadata
         ))
         
-        # Output rotations for SIMD alignment (if needed)
-        if hasattr(layer, 'output_rotations') and layer.output_rotations > 0:
-            for i in range(layer.output_rotations):
-                operations.append(FHEOperation(
-                    op_type="rotate",
-                    method_name="rotate",
-                    args=[i],
-                    kwargs={"offset": i},
-                    result_var=f"{layer_name}_rot_{i}",
-                    level=level,
-                    metadata={'operation': 'output_rotation', 'layer': layer_name, 'rotation_step': i}
-                ))
+        rotation_ops = self._generate_output_rotations(layer, layer_name, f"{layer_name}_conv", level)
+        operations.extend(rotation_ops)
+
+        # Determine final result variable for bias addition
+        if rotation_ops:
+            final_result = None
+            for op in reversed(rotation_ops):
+                if op.op_type == "add" and "acc" in op.result_var:
+                    final_result = op.result_var
+                    break
+            if not final_result:
+                final_result = f"{layer_name}_conv"
+        else:
+            final_result = f"{layer_name}_conv"
+
         
         # Bias addition if present
         if hasattr(layer, 'bias') and layer.bias is not None:
