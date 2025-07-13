@@ -307,7 +307,7 @@ class LWEEncodingHandler(BaseOperationHandler):
         
         encoded_plaintext = type_builder.create_slot_based_plaintext_encoding(block, tensor_arg, target_scale) 
 
-        slots = getattr(type_builder.scheme_params, 'slots', 4096)
+        slots = getattr(type_builder.scheme_params, 'slots', type_builder.scheme_params.ring_degree // 2)
         print(f"✅ Created slot-based encoding (padded to {slots} slots)")
         
         # Store result
@@ -401,7 +401,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         print(f"    Operation metadata: {operation.metadata}")
         
         # Extract Orion metadata
-        orion_metadata = self._extract_orion_metadata(operation)
+        orion_metadata = self._extract_orion_metadata(operation, type_builder)
         
         # Get the layer from operation args to extract diagonal blocks
         layer = None
@@ -504,7 +504,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         diagonal_indices = []
         stacked_diagonal_data = []
         
-        slots = orion_metadata.get('slots', 4096)
+        slots = orion_metadata.get('slots')
         
         for diag_idx in sorted(block_diagonals.keys()):
             diag_data = block_diagonals[diag_idx]
@@ -684,7 +684,7 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         
         return linear_transform_op.results[0]
     
-    def _extract_orion_metadata(self, operation: FHEOperation) -> Dict:
+    def _extract_orion_metadata(self, operation: FHEOperation, type_builder: Any) -> Dict:
         """Extract Orion-specific metadata from the operation."""
         import math
         
@@ -696,13 +696,13 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         
         # Add default BSGS parameters if not present
         metadata.setdefault('bsgs_ratio', 2.0)
-        metadata.setdefault('slots', 4096)
+        slots = type_builder.scheme_params.ring_degree // 2
+        metadata.setdefault('slots', slots)
         metadata.setdefault('embedding_method', 'hybrid')
         metadata.setdefault('orion_level', operation.level or 1)
         
         # Calculate baby/giant step sizes
         diagonal_count = metadata.get('diagonal_count', 128)
-        slots = metadata.get('slots', 4096)
         bsgs_ratio = metadata.get('bsgs_ratio', 2.0)
         
         baby_step_size = int(math.sqrt(slots) / bsgs_ratio)
