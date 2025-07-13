@@ -152,6 +152,14 @@ class OrionFrontend(FrontendInterface):
                 'noise_growth': 'minimal'
             },
             
+            # Polynomial operations
+            'ckks.chebyshev': {
+                'description': 'Evaluate Chebyshev polynomial with coefficients',
+                'operands': 1,
+                'level_change': -1,
+                'noise_growth': 'polynomial'
+            },
+
             # Primary Orion operation
             'linear_transform': {
                 'description': 'Orion linear transform using precomputed diagonals',
@@ -248,6 +256,46 @@ class OrionFrontend(FrontendInterface):
                     operations.extend(layer_ops)
                     found_layers.append(f"{name}(Linear)")
                     
+                elif layer_type == 'Conv2d':
+                    layer_ops = self._get_conv2d_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(Conv2d)")
+                    
+                elif layer_type == 'BatchNorm2d':
+                    layer_ops = self._get_batchnorm2d_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(BatchNorm2d)")
+                    
+                elif layer_type == 'ReLU':
+                    layer_ops = self._get_relu_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(ReLU)")
+                    
+                elif layer_type == 'Add':
+                    layer_ops = self._get_add_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(Add)")
+                    
+                elif layer_type == 'Bootstrap':
+                    layer_ops = self._get_bootstrap_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(Bootstrap)")
+                    
+                elif layer_type == 'Chebyshev':
+                    layer_ops = self._get_chebyshev_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(Chebyshev)")
+                    
+                elif layer_type == '_Sign':
+                    layer_ops = self._get_sign_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(_Sign)")
+                    
+                elif layer_type == 'Mult':
+                    layer_ops = self._get_mult_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}(Mult)")
+                    
                 elif layer_type == 'Quad':
                     layer_ops = self._get_quad_operations(layer, name)
                     operations.extend(layer_ops)
@@ -272,7 +320,7 @@ class OrionFrontend(FrontendInterface):
                     print(f"    ⚠️  Unknown layer type: {layer_type}")
             else:
                 # Layer doesn't produce FHE operations
-                if layer_type in ['Flatten', 'BatchNorm1d']:
+                if layer_type in ['Flatten', 'BatchNorm1d', 'Identity', 'Sequential', 'ModuleList', 'AdaptiveAvgPool2d']:
                     print(f"    ℹ️  {name}({layer_type}) - no direct FHE operations")
                 else:
                     print(f"    ⚠️  {name}({layer_type}) - no operations extracted")
@@ -282,15 +330,6 @@ class OrionFrontend(FrontendInterface):
         print(f"   Expected layers: {len(expected_layers)}")
         print(f"   Processed layers: {len(found_layers)}")
         print(f"   Total operations: {len(operations)}")
-        
-        # Check for missing operations
-        missing_activations = []
-        for name, layer in all_layers:
-            if layer.__class__.__name__ == 'Quad' and f"{name}(Quad)" not in found_layers:
-                missing_activations.append(name)
-        
-        if missing_activations:
-            print(f"   ⚠️  Missing Quad activations: {missing_activations}")
         
         return operations
 
@@ -305,17 +344,29 @@ class OrionFrontend(FrontendInterface):
         # Linear layers always produce operations
         if layer_type == 'Linear':
             return hasattr(layer, 'diagonals') or hasattr(layer, 'transform_ids')
-        
+
+        if layer_type == 'Conv2d':
+            return hasattr(layer, 'diagonals') or hasattr(layer, 'transform_ids')
+    
         # Quad activations produce operations
-        if layer_type == 'Quad':
-            return hasattr(layer, 'level')  # Compiled Quad layers have level
-        
+        if layer_type in ['Quad', 'ReLU', 'Chebyshev', '_Sign', 'Mult']:
+            return hasattr(layer, 'level') or hasattr(layer, 'polynomial_coeffs')
+     
         # BatchNorm may produce operations if not fused
-        if layer_type == 'BatchNorm1d':
+        if layer_type in ['BatchNorm1d', 'BatchNorm2d']:
             return not self._is_batchnorm_fused(layer)
+
+        # Add operations for residual connections
+        if layer_type == 'Add':
+            return True  # Add operations always produce FHE operations
+        
+        # Bootstrap operations for noise management
+        if layer_type == 'Bootstrap':
+            return True  # Bootstrap operations always needed in FHE
+
         
         # Flatten is plaintext, no FHE operations needed
-        if layer_type == 'Flatten':
+        if layer_type in ['Flatten', 'Identity', 'Sequential', 'ModuleList', 'AdaptiveAvgPool2d']:
             return False
         
         return False
@@ -378,16 +429,36 @@ class OrionFrontend(FrontendInterface):
             
         # Check layer type
         layer_type = layer.__class__.__name__
-        orion_layer_types = ['Linear', 'Conv2d', 'LinearTransform', 'Activation']
+        orion_layer_types = [
+            # Original MLP types
+            'Linear', 'LinearTransform', 'Activation', 'Quad',
+            # ResNet CNN types  
+            'Conv2d', 'BatchNorm2d', 'ReLU', 'Add',
+            # Polynomial approximation types
+            'Chebyshev', '_Sign', 'Mult', 
+            # Noise management
+            'Bootstrap'
+        ]
         
         if layer_type in orion_layer_types:
             # Additional check for Orion-specific compilation artifacts
             compilation_indicators = [
+                # Linear transform artifacts
                 'diagonals',      # Linear transform diagonals
                 'transform_ids',  # Backend transform IDs
                 'on_weight',      # Orion weight copy
                 'on_bias',        # Orion bias copy
                 'level',          # Assigned level
+                # Polynomial artifacts
+                'coeffs',         # Polynomial coefficients
+                'poly',           # Compiled polynomial ID
+                'low', 'high',    # Approximation domain
+                # Activation artifacts
+                'degrees',        # Polynomial degrees
+                'acts',           # Sub-activations (for composite)
+                # General compilation artifacts
+                'he_mode',        # FHE mode flag
+                'scheme',         # Orion scheme reference
             ]
             
             return any(hasattr(layer, attr) for attr in compilation_indicators)
@@ -406,12 +477,27 @@ class OrionFrontend(FrontendInterface):
         if layer_type == 'Linear':
             return self._get_linear_operations(layer, layer_name)
         elif layer_type == 'Conv2d':
-            return self._get_conv_operations(layer, layer_name)
-        elif layer_type in ['Activation', 'Quad', 'Chebyshev']:
+            return self._get_conv2d_operations(layer, layer_name)
+        elif layer_type == 'BatchNorm2d':
+            return self._get_batchnorm2d_operations(layer, layer_name)
+        elif layer_type == 'ReLU':
+            return self._get_relu_operations(layer, layer_name)
+        elif layer_type == 'Add':
+            return self._get_add_operations(layer, layer_name)
+        elif layer_type == 'Bootstrap':
+            return self._get_bootstrap_operations(layer, layer_name)
+        elif layer_type == 'Chebyshev':
+            return self._get_chebyshev_operations(layer, layer_name)
+        elif layer_type == '_Sign':
+            return self._get_sign_operations(layer, layer_name)
+        elif layer_type == 'Mult':
+            return self._get_mult_operations(layer, layer_name)
+        elif layer_type in ['Activation', 'Quad']:
             return self._get_activation_operations(layer, layer_name)
         else:
             # Generic layer - try to infer operations
             return self._get_generic_operations(layer, layer_name)
+
     
     def _get_linear_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
         """
@@ -642,6 +728,99 @@ class OrionFrontend(FrontendInterface):
         
         return operations
 
+    
+    def _get_conv2d_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for a Conv2d layer.
+        
+        Conv2d in Orion is implemented using linear transforms with
+        Toeplitz matrices converted to diagonal matrices for SIMD computation.
+        """
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        # Get convolution metadata
+        conv_metadata = {
+            'operation': 'orion_convolution',
+            'layer': layer_name,
+            'layer_type': 'Conv2d',
+            'orion_level': level,
+        }
+        
+        # Add convolution-specific metadata
+        if hasattr(layer, 'kernel_size'):
+            conv_metadata['kernel_size'] = layer.kernel_size
+        if hasattr(layer, 'stride'):
+            conv_metadata['stride'] = layer.stride
+        if hasattr(layer, 'padding'):
+            conv_metadata['padding'] = layer.padding
+        if hasattr(layer, 'in_channels'):
+            conv_metadata['in_channels'] = layer.in_channels
+        if hasattr(layer, 'out_channels'):
+            conv_metadata['out_channels'] = layer.out_channels
+        
+        # Get transform information
+        if hasattr(layer, 'transform_ids') and layer.transform_ids:
+            conv_metadata['transform_blocks'] = len(layer.transform_ids)
+            conv_metadata['transform_ids'] = list(layer.transform_ids.keys())
+        
+        # Get diagonal information  
+        if hasattr(layer, 'diagonals') and layer.diagonals:
+            total_diagonals = sum(len(diags) for diags in layer.diagonals.values())
+            conv_metadata['diagonal_count'] = total_diagonals
+            conv_metadata['diagonal_blocks'] = list(layer.diagonals.keys())
+        
+        # Convolution as linear transform (using Toeplitz -> diagonal conversion)
+        operations.append(FHEOperation(
+            op_type="linear_transform",
+            method_name="linear_transform",
+            args=[],
+            kwargs={
+                "matrix_type": "toeplitz_diagonal",
+                "convolution": True
+            },
+            result_var=f"{layer_name}_conv",
+            level=level,
+            metadata=conv_metadata
+        ))
+        
+        # Output rotations for SIMD alignment (if needed)
+        if hasattr(layer, 'output_rotations') and layer.output_rotations > 0:
+            for i in range(layer.output_rotations):
+                operations.append(FHEOperation(
+                    op_type="rotate",
+                    method_name="rotate",
+                    args=[i],
+                    kwargs={"offset": i},
+                    result_var=f"{layer_name}_rot_{i}",
+                    level=level,
+                    metadata={'operation': 'output_rotation', 'layer': layer_name, 'rotation_step': i}
+                ))
+        
+        # Bias addition if present
+        if hasattr(layer, 'bias') and layer.bias is not None:
+            operations.append(FHEOperation(
+                op_type="encode",
+                method_name="encode",
+                args=[layer.bias],
+                kwargs={},
+                result_var=f"{layer_name}_bias_encoded",
+                level=level,
+                metadata={'operation': 'bias_encode', 'layer': layer_name}
+            ))
+            
+            operations.append(FHEOperation(
+                op_type="add_plain",
+                method_name="add_plain",
+                args=[f"@{layer_name}_bias_encoded"],
+                kwargs={},
+                result_var=f"{layer_name}_result",
+                level=level,
+                metadata={'operation': 'bias_addition', 'layer': layer_name, 'layer_type': 'Conv2d'}
+            ))
+        
+        return operations
+
     def _get_quad_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
         """
         Get operations for a Quad activation layer.
@@ -759,6 +938,393 @@ class OrionFrontend(FrontendInterface):
                 ))
         
         return operations
+
+    def _get_batchnorm2d_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for a BatchNorm2d layer.
+        
+        BatchNorm2d applies: y = (x - mean) / sqrt(var + eps) * weight + bias
+        In FHE, this is typically pre-computed and applied as: y = x * scale + bias
+        """
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        # Check if BatchNorm is fused into adjacent layer
+        if self._is_batchnorm_fused(layer):
+            print(f"    ℹ️  BatchNorm2d {layer_name} is fused into adjacent layer")
+            return operations
+        
+        # Standalone BatchNorm2d operations
+        if hasattr(layer, 'running_mean') and hasattr(layer, 'running_var'):
+            # Pre-computed scaling factor: weight / sqrt(var + eps)
+            eps = getattr(layer, 'eps', 1e-5)
+            if hasattr(layer, 'weight') and layer.weight is not None:
+                scale = layer.weight / torch.sqrt(layer.running_var + eps)
+            else:
+                scale = 1.0 / torch.sqrt(layer.running_var + eps)
+            
+            # Pre-computed bias: bias - mean * scale
+            if hasattr(layer, 'bias') and layer.bias is not None:
+                fused_bias = layer.bias - layer.running_mean * scale
+            else:
+                fused_bias = -layer.running_mean * scale
+            
+            # Encode the scaling factor
+            operations.append(FHEOperation(
+                op_type="encode",
+                method_name="encode",
+                args=[scale],
+                kwargs={},
+                result_var=f"{layer_name}_scale_encoded",
+                level=level,
+                metadata={'operation': 'batchnorm_scale_encode', 'layer': layer_name, 'layer_type': 'BatchNorm2d'}
+            ))
+            
+            # Multiply by scaling factor
+            operations.append(FHEOperation(
+                op_type="mul_plain",
+                method_name="mul_plain",
+                args=[f"@{layer_name}_scale_encoded"],
+                kwargs={},
+                result_var=f"{layer_name}_scaled",
+                level=level,
+                metadata={'operation': 'batchnorm_scale', 'layer': layer_name, 'layer_type': 'BatchNorm2d'}
+            ))
+            
+            # Encode the fused bias
+            operations.append(FHEOperation(
+                op_type="encode",
+                method_name="encode",
+                args=[fused_bias],
+                kwargs={},
+                result_var=f"{layer_name}_bias_encoded",
+                level=level,
+                metadata={'operation': 'batchnorm_bias_encode', 'layer': layer_name, 'layer_type': 'BatchNorm2d'}
+            ))
+            
+            # Add the fused bias
+            operations.append(FHEOperation(
+                op_type="add_plain",
+                method_name="add_plain",
+                args=[f"@{layer_name}_bias_encoded"],
+                kwargs={},
+                result_var=f"{layer_name}_result",
+                level=level,
+                metadata={'operation': 'batchnorm_bias_addition', 'layer': layer_name, 'layer_type': 'BatchNorm2d'}
+            ))
+        
+        return operations
+
+
+    def _get_relu_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """Get operations for ReLU layer."""
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        # Check if ReLU has polynomial approximation components
+        if hasattr(layer, 'sign') and hasattr(layer, 'mult1') and hasattr(layer, 'mult2'):
+            # Orion's ReLU decomposition: ReLU(x) = 0.5 * (x + x * sign(x))
+            
+            # Extract sign polynomial coefficients
+            sign_coeffs = []
+            domain_start = -1.0
+            domain_end = 1.0
+            
+            if hasattr(layer.sign, 'coeffs') and layer.sign.coeffs:
+                # Get coefficients from compiled sign function
+                for poly_coeffs in layer.sign.coeffs:
+                    if hasattr(poly_coeffs, 'tolist'):
+                        sign_coeffs.extend(poly_coeffs.tolist())
+                    else:
+                        sign_coeffs.extend(poly_coeffs)
+            
+            # Get domain from sign layer if available
+            if hasattr(layer.sign, 'low') and hasattr(layer.sign, 'high'):
+                domain_start = float(layer.sign.low)
+                domain_end = float(layer.sign.high)
+            
+            # Sign polynomial evaluation using Orion's coefficients
+            operations.append(FHEOperation(
+                op_type="ckks.chebyshev",
+                method_name="chebyshev",
+                args=[],
+                kwargs={
+                    "coefficients": sign_coeffs,
+                    "domain_start": domain_start,
+                    "domain_end": domain_end
+                },
+                result_var=f"{layer_name}_sign",
+                level=level - 1,
+                metadata={
+                    'operation': 'sign_chebyshev_approximation',
+                    'layer': layer_name,
+                    'degrees': getattr(layer.sign, 'degrees', []),
+                    'coefficients_count': len(sign_coeffs),
+                    'function_type': 'sign'
+                }
+            ))
+            
+            # Multiplication: x * sign(x)
+            operations.append(FHEOperation(
+                op_type="mul",
+                method_name="mul",
+                args=[],
+                kwargs={},
+                result_var=f"{layer_name}_mult1",
+                level=level - 2,
+                metadata={'operation': 'relu_sign_mult', 'layer': layer_name}
+            ))
+            
+            # Addition: x + x*sign(x)  
+            operations.append(FHEOperation(
+                op_type="add",
+                method_name="add",
+                args=[],
+                kwargs={},
+                result_var=f"{layer_name}_sum",
+                level=level - 2,
+                metadata={'operation': 'relu_sum', 'layer': layer_name}
+            ))
+            
+            # Final scaling by 0.5
+            operations.append(FHEOperation(
+                op_type="mul_plain",
+                method_name="mul_plain", 
+                args=[0.5],
+                kwargs={},
+                result_var=f"{layer_name}_result",
+                level=level - 2,
+                metadata={'operation': 'relu_final_scale', 'layer': layer_name}
+            ))
+            
+        else:
+            # Simple polynomial ReLU (if no decomposition)
+            relu_coeffs = []
+            domain_start = -1.0
+            domain_end = 1.0
+            
+            if hasattr(layer, 'coeffs') and layer.coeffs:
+                relu_coeffs = layer.coeffs.tolist() if hasattr(layer.coeffs, 'tolist') else layer.coeffs
+            if hasattr(layer, 'low') and hasattr(layer, 'high'):
+                domain_start = float(layer.low)
+                domain_end = float(layer.high)
+            
+            operations.append(FHEOperation(
+                op_type="ckks.chebyshev",
+                method_name="chebyshev",
+                args=[],
+                kwargs={
+                    "coefficients": relu_coeffs,
+                    "domain_start": domain_start,
+                    "domain_end": domain_end
+                },
+                result_var=f"{layer_name}_result",
+                level=level - 1,
+                metadata={
+                    'operation': 'relu_chebyshev', 
+                    'layer': layer_name,
+                    'coefficients_count': len(relu_coeffs),
+                    'function_type': 'relu'
+                }
+            ))
+        
+        return operations
+
+
+    def _get_add_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for an Add layer (used in residual connections).
+        
+        Add layer performs element-wise addition of two ciphertexts.
+        """
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        # Element-wise addition of two ciphertexts
+        operations.append(FHEOperation(
+            op_type="add",
+            method_name="add",
+            args=[],  # The actual operands will be filled in during execution
+            kwargs={},
+            result_var=f"{layer_name}_result",
+            level=level,
+            metadata={
+                'operation': 'residual_addition',
+                'layer': layer_name,
+                'layer_type': 'Add',
+                'purpose': 'skip_connection'
+            }
+        ))
+        
+        return operations
+
+
+    def _get_bootstrap_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for a Bootstrap layer.
+        
+        Bootstrap refreshes the ciphertext by reducing noise and resetting level.
+        """
+        operations = []
+        
+        # Bootstrap operation
+        operations.append(FHEOperation(
+            op_type="bootstrap",
+            method_name="bootstrap",
+            args=[],
+            kwargs={},
+            result_var=f"{layer_name}_refreshed",
+            level=5,  # Bootstrap typically resets to high level
+            metadata={
+                'operation': 'noise_refresh',
+                'layer': layer_name,
+                'layer_type': 'Bootstrap',
+                'purpose': 'level_reset'
+            }
+        ))
+        
+        return operations
+
+    def _get_mult_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """
+        Get operations for a Mult layer.
+        
+        Multiplication operation used in activation function decomposition.
+        """
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        # Multiplication operation
+        operations.append(FHEOperation(
+            op_type="mul",
+            method_name="mul",
+            args=[],  # Operands filled during execution
+            kwargs={},
+            result_var=f"{layer_name}_result",
+            level=level - 1,  # Multiplication consumes a level
+            metadata={
+                'operation': 'activation_multiplication',
+                'layer': layer_name,
+                'layer_type': 'Mult'
+            }
+        ))
+        
+        return operations
+
+
+    def _get_chebyshev_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """Get operations for Chebyshev layer."""
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        print(f"    🔍 Extracting Chebyshev data from {layer_name}:")
+        print(f"       - Layer type: {layer.__class__.__name__}")
+        print(f"       - Has coeffs: {hasattr(layer, 'coeffs')}")
+        print(f"       - Has low/high: {hasattr(layer, 'low')}/{hasattr(layer, 'high')}")
+        print(f"       - Has degree: {hasattr(layer, 'degree')}")
+        print(f"       - Has fn: {hasattr(layer, 'fn')}")
+        print(f"       - All attributes: {[attr for attr in dir(layer) if not attr.startswith('_')]}")
+        
+        # Extract Chebyshev coefficients from compiled layer
+        coeffs = []
+        domain_start = -1.0
+        domain_end = 1.0
+        
+        if hasattr(layer, 'coeffs') and layer.coeffs is not None:
+            if hasattr(layer.coeffs, 'tolist'):
+                coeffs = layer.coeffs.tolist()
+            elif isinstance(layer.coeffs, (list, tuple)):
+                coeffs = list(layer.coeffs)
+            else:
+                coeffs = [float(layer.coeffs)]
+            print(f"       - Extracted coeffs: {coeffs[:5]}{'...' if len(coeffs) > 5 else ''}")
+        else:
+            print(f"       - No coefficients found")
+        
+        if hasattr(layer, 'low') and hasattr(layer, 'high'):
+            domain_start = float(layer.low)
+            domain_end = float(layer.high)
+            print(f"       - Domain: [{domain_start}, {domain_end}]")
+        
+        # Get function type if available
+        function_type = "unknown"
+        if hasattr(layer, 'fn') and hasattr(layer.fn, '__name__'):
+            function_type = layer.fn.__name__
+        elif hasattr(layer, 'fn') and callable(layer.fn):
+            function_type = str(layer.fn)
+        print(f"       - Function type: {function_type}")
+        
+        # Only create operation if we have coefficients
+        if coeffs:
+            operations.append(FHEOperation(
+                op_type="ckks.chebyshev",
+                method_name="chebyshev",
+                args=[],
+                kwargs={
+                    "coefficients": coeffs,
+                    "domain_start": domain_start,
+                    "domain_end": domain_end
+                },
+                result_var=f"{layer_name}_result",
+                level=level - 1,
+                metadata={
+                    'operation': 'chebyshev_approximation',
+                    'layer': layer_name,
+                    'degree': getattr(layer, 'degree', len(coeffs) - 1),
+                    'function_type': function_type,
+                    'coefficients_count': len(coeffs)
+                }
+            ))
+            print(f"       ✅ Created ckks.chebyshev operation with {len(coeffs)} coefficients")
+        else:
+            print(f"       ⚠️ No coefficients available, skipping operation creation")
+        
+        return operations
+    
+    def _get_sign_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+        """Get operations for _Sign layer."""
+        operations = []
+        level = getattr(layer, 'level', 1)
+        
+        # Extract sign polynomial coefficients
+        coeffs = []
+        domain_start = -1.0
+        domain_end = 1.0
+        
+        if hasattr(layer, 'coeffs') and layer.coeffs:
+            # Sign layers often have multiple coefficient sets
+            for poly_coeffs in layer.coeffs:
+                if hasattr(poly_coeffs, 'tolist'):
+                    coeffs.extend(poly_coeffs.tolist())
+                else:
+                    coeffs.extend(poly_coeffs)
+        
+        if hasattr(layer, 'low') and hasattr(layer, 'high'):
+            domain_start = float(layer.low)
+            domain_end = float(layer.high)
+        
+        operations.append(FHEOperation(
+            op_type="ckks.chebyshev",
+            method_name="chebyshev",
+            args=[],
+            kwargs={
+                "coefficients": coeffs,
+                "domain_start": domain_start,
+                "domain_end": domain_end
+            },
+            result_var=f"{layer_name}_result",
+            level=level - 1,
+            metadata={
+                'operation': 'sign_chebyshev_approximation',
+                'layer': layer_name,
+                'degrees': getattr(layer, 'degrees', []),
+                'coefficients_count': len(coeffs),
+                'function_type': 'sign'
+            }
+        ))
+        
+        return operations
+
 
     def _is_batchnorm_fused(self, layer: Any) -> bool:
         """
