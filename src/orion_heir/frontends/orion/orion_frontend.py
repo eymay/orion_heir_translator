@@ -333,6 +333,16 @@ class OrionFrontend(FrontendInterface):
         
         return operations
 
+    def _is_layer_fused(self, layer: Any) -> bool:
+        """
+        Check if a layer is fused into an adjacent layer.
+
+        In Orion, layers without assigned levels are typically fused
+        into other layers during compilation for efficiency.
+        """
+        return not hasattr(layer, 'level') or layer.level is None
+
+
     def _should_extract_layer(self, layer: Any) -> bool:
         """
         Check if a layer should produce FHE operations.
@@ -350,11 +360,11 @@ class OrionFrontend(FrontendInterface):
     
         # Quad activations produce operations
         if layer_type in ['Quad', 'ReLU', 'Chebyshev', '_Sign', 'Mult']:
-            return hasattr(layer, 'level') or hasattr(layer, 'polynomial_coeffs')
-     
+            return not self._is_layer_fused(layer) 
+
         # BatchNorm may produce operations if not fused
         if layer_type in ['BatchNorm1d', 'BatchNorm2d']:
-            return not self._is_batchnorm_fused(layer)
+            return not self._is_layer_fused(layer)
 
         # Add operations for residual connections
         if layer_type == 'Add':
@@ -774,7 +784,7 @@ class OrionFrontend(FrontendInterface):
         operations.append(FHEOperation(
             op_type="linear_transform",
             method_name="linear_transform",
-            args=[],
+            args=[layer],
             kwargs={
                 "matrix_type": "toeplitz_diagonal",
                 "convolution": True
@@ -1019,7 +1029,12 @@ class OrionFrontend(FrontendInterface):
     def _get_relu_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
         """Get operations for ReLU layer."""
         operations = []
-        level = getattr(layer, 'level', 1)
+        # Check if ReLU is fused into adjacent layer (like BatchNorm is)
+        if self._is_layer_fused(layer):
+            print(f"    ℹ️  ReLU {layer_name} is fused into adjacent layer")
+            return operations  # Return empty - no separate operations needed
+
+        level = layer.level 
         
         # Check if ReLU has polynomial approximation components
         if hasattr(layer, 'sign') and hasattr(layer, 'mult1') and hasattr(layer, 'mult2'):
@@ -1284,8 +1299,13 @@ class OrionFrontend(FrontendInterface):
     def _get_sign_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
         """Get operations for _Sign layer."""
         operations = []
-        level = getattr(layer, 'level', 1)
+        if self._is_layer_fused(layer):
+            print(f"    ℹ️  Sign {layer_name} is fused into adjacent layer")
+            return operations
         
+        level = layer.level  # Now we know level is not None
+        print(f"    ➕ Sign activation at level {level}")
+     
         # Extract sign polynomial coefficients
         coeffs = []
         domain_start = -1.0
