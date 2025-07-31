@@ -818,7 +818,7 @@ class CKKSChebyshevHandler(BaseOperationHandler):
               constants: Dict[str, SSAValue],
               type_builder: Any) -> SSAValue:
         """Handle Chebyshev polynomial evaluation."""
-        from ..dialects.ckks import ChebyshevOp
+        from ..dialects.ckks import ChebyshevOp, BootstrapOp
         from xdsl.dialects.builtin import ArrayAttr, FloatAttr, f64
         
         # Get coefficients from operation
@@ -837,11 +837,20 @@ class CKKSChebyshevHandler(BaseOperationHandler):
         coeff_array = ArrayAttr(coeff_attrs)
         
         # Create result type
-        result_type = type_builder.get_default_ciphertext_type()
+        bootstrap_result_type = type_builder.get_default_ciphertext_type()
         
+        # Create bootstrap operation
+        bootstrap_op = BootstrapOp(
+            operands=[current_value],
+            result_types=[bootstrap_result_type]
+        )
+        
+        block.add_op(bootstrap_op)
+        bootstrapped_value = bootstrap_op.results[0]
+        result_type = type_builder.get_default_ciphertext_type()
         # Create Chebyshev operation
         cheby_op = ChebyshevOp(
-            operands=[current_value],
+            operands=[bootstrapped_value],
             result_types=[result_type],
             properties={
                 'coefficients': coeff_array,
