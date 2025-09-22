@@ -14,7 +14,6 @@ orion-heir-translator/
 │   └── tools/             # CLI tools and drivers
 ├── tests/                 # Test suite
 ├── examples/              # Usage examples
-└── docs/                 # Documentation
 ```
 
 ## Installation
@@ -25,31 +24,14 @@ git clone https://github.com/eymay/orion_heir_translator.git
 cd orion_heir_translator
 pip install -e .
 ```
+Dependencies should be installed automatically.
 
-### Dependencies
-```bash
-# Required
-pip install xdsl torch pyyaml click
-
-# Optional (for Orion frontend)
-pip install orion-fhe  # If you have access to Orion
-```
+### Extra dependencies
+Orion can be picky on Python version, please install it as explained [here](https://github.com/baahl-nyu/orion?tab=readme-ov-file#install-orion).
 
 ## Quick Start
-
-### CLI Usage
-
 ```bash
-# Generate and translate sample MLP operations
-orion-heir-translate --example -o mlp_example.mlir
-
-# Translate operations from file  
-orion-heir-translate -i operations.json -o output.mlir
-
-# Use configuration file
-orion-heir-translate -i ops.json -c config.yml -o output.mlir
-
-# Create sample configuration
-orion-heir-translate create-config -o my_config.yml
+python examples/mlp.py
+python examples/resnet.py
 ```
 
