@@ -15,8 +15,7 @@ import orion
 import orion.nn as on
 
 
-class MinimalMLP(on.Module):
-    """Simple multi-layer perceptron matching Orion examples."""
+class MLP(on.Module):
     
     def __init__(self, num_classes=10):
         super().__init__()
@@ -40,7 +39,7 @@ class MinimalMLP(on.Module):
 
 
 def main():
-    print("🚀 Minimal MLP Orion Test - Show Orion's Actual IR")
+    print("🚀 MLP Orion Test - Show Orion's Actual IR")
     print("=" * 50)
     
     # Initialize Orion scheme with actual MLP config values
@@ -59,7 +58,7 @@ def main():
     print("✅ Orion scheme initialized")
     
     # Create the model
-    model = MinimalMLP()
+    model = MLP()
     print(f"✅ Model: MLP with layers (matching Orion examples):")
     print(f"   - flatten: Flatten()")
     print(f"   - fc1: Linear(784, 128)")
@@ -203,9 +202,20 @@ def main():
     print(f"\n🔄 Translating to HEIR MLIR...")
     from orion_heir import GenericTranslator
     
-    scheme_params = frontend._create_default_scheme()
+    from orion_heir.frontends.orion.scheme_params import OrionSchemeParameters
+    
+    scheme_params = OrionSchemeParameters(
+        logN=13,
+        logQ=[29, 26, 26, 26, 26, 26],
+        logP=[29, 29],
+        logScale=26,
+        slots=4096,
+        ring_degree=8192,
+        backend='lattigo',
+        require_orion=True
+    )
     translator = GenericTranslator()
-    module = translator.translate(operations, scheme_params, "minimal_mlp")
+    module = translator.translate(operations, scheme_params, "mlp")
     
     # Generate MLIR output
     from xdsl.printer import Printer
@@ -217,74 +227,19 @@ def main():
     printer.print(module)
     mlir_output = output_buffer.getvalue()
     
-    Path("minimal_mlp.mlir").write_text(mlir_output)
-    print("💾 Saved to minimal_mlp.mlir")
+    Path("mlp_fhe.mlir").write_text(mlir_output)
+    print("💾 Saved to mlp_fhe.mlir")
     try:
         # Verify the individual operation
         module.verify()
     except VerifyException as e:
         print(f"❌ Failed verification: {e}")
         raise
-    # Show MLIR statistics
-    print(f"\n📄 MLIR Statistics:")
-    print("=" * 50)
-    lines = mlir_output.split('\n')
-    
-    # Count different operation types
-    op_counts = {}
-    for line in lines:
-        line = line.strip()
-        if ' = ' in line and ('ckks.' in line or 'lwe.' in line or 'arith.' in line):
-            op_type = line.split(' = ')[1].split(' ')[0]
-            op_counts[op_type] = op_counts.get(op_type, 0) + 1
-    
-    print(f"MLIR Operation Counts:")
-    for op_type, count in sorted(op_counts.items()):
-        print(f"  {op_type:20}: {count}")
-    
-    # Show complexity comparison
-    print(f"\nComplexity Analysis:")
-    print(f"  Total operations: {len(operations)}")
-    print(f"  Linear layers: {len([op for op in operations if 'linear_transform' in op.op_type])}")
-    print(f"  Activations: {len([op for op in operations if 'quad' in op.op_type or 'mul' in op.op_type])}")
-    print(f"  Batch norms: {len([op for op in operations if 'batch_norm' in op.op_type or 'bn' in op.result_var])}")
-    print(f"  Encoding ops: {len([op for op in operations if 'encode' in op.op_type])}")
-    print(f"  Bias additions: {len([op for op in operations if 'add_plain' in op.op_type])}")
-    
-    print(f"\nTotal MLIR lines: {len(lines)}")
-    fhe_ops = [l for l in lines if ' = ' in l and ('ckks.' in l or 'lwe.' in l)]
-    print(f"FHE operations: {len(fhe_ops)}")
-    print(f"Constants: {len([l for l in lines if 'arith.constant' in l])}")
-    
-    # Show expected computation levels
-    print(f"\nExpected FHE Computation Levels:")
-    print(f"  Input level: {input_level}")
-    print(f"  After fc1+bn1: level {input_level-1}")
-    print(f"  After act1 (quad): level {input_level-2}")
-    print(f"  After fc2+bn2: level {input_level-3}")
-    print(f"  After act2 (quad): level {input_level-4}")
-    print(f"  After fc3: level {input_level-5}")
-    
-    # Show a sample of the MLIR (first few operations)
-    print(f"\n📄 MLIR Sample (first 10 operations):")
-    print("-" * 40)
-    op_count = 0
-    for line in lines:
-        if line.strip() and (' = ckks.' in line or ' = lwe.' in line):
-            print(f"  {line.strip()}")
-            op_count += 1
-            if op_count >= 10:
-                break
-    if len(operations) > 10:
-        print(f"  ... ({len(operations) - 10} more operations)")
-    
-    print(f"\n✅ Translation complete!")
-    print(f"   Operations: {len(operations)} total")
-    print(f"   Layers: {len(layer_ops)} layers")
-    print(f"   Complexity: {total_diagonals} diagonals, {total_rotations} rotations")
     
     return 0
 
 
 if __name__ == "__main__":
     exit(main())
+
+

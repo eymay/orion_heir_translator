@@ -60,6 +60,37 @@ class BasicBlock(on.Module):
         out = self.add(out, self.shortcut(x))
         return self.act2(out)
 
+class Bottleneck(on.Module):
+    expansion = 4
+
+    def __init__(self, Ci, Co, stride=1):
+        super().__init__()
+        self.conv1 = on.Conv2d(Ci, Co, kernel_size=1, bias=False)
+        self.bn1   = on.BatchNorm2d(Co)
+        self.act1  = on.SiLU(degree=127) 
+
+        self.conv2 = on.Conv2d(Co, Co, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2   = on.BatchNorm2d(Co)
+        self.act2  = on.SiLU(degree=127)  
+
+        self.conv3 = on.Conv2d(Co, Co*self.expansion, kernel_size=1, stride=1, bias=False)
+        self.bn3   = on.BatchNorm2d(Co*self.expansion)
+        self.act3  = on.SiLU(degree=127)  
+
+        self.add = on.Add()
+        self.shortcut = nn.Sequential()
+        if stride != 1 or Ci != self.expansion*Co:
+            self.shortcut = nn.Sequential(
+                on.Conv2d(Ci, self.expansion*Co, kernel_size=1, stride=stride, bias=False),
+                on.BatchNorm2d(self.expansion*Co))
+
+    def forward(self, x):
+        out = self.act1(self.bn1(self.conv1(x)))
+        out = self.act2(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        out = self.add(out, self.shortcut(x))
+        return self.act3(out)
+
 
 class ResNet(on.Module):
     def __init__(self, dataset, block, num_blocks, num_chans, conv1_params, num_classes):
@@ -134,9 +165,17 @@ def ResNet8(dataset='cifar10'):
     conv1_params, num_classes = get_resnet_config(dataset)
     return ResNet(dataset, BasicBlock, [1,1,1], [16,32,64], conv1_params, num_classes)
 
+def ResNet10(dataset='cifar10'):
+    conv1_params, num_classes = get_resnet_config(dataset)
+    return ResNet(dataset, BasicBlock, [1,1,1], [20,40,80], conv1_params, num_classes)
+
 def ResNet20(dataset='cifar10'):
     conv1_params, num_classes = get_resnet_config(dataset)
     return ResNet(dataset, BasicBlock, [3,3,3], [16,32,64], conv1_params, num_classes)
+
+def ResNet50(dataset='imagenet'):
+    conv1_params, num_classes = get_resnet_config(dataset)
+    return ResNet(dataset, Bottleneck, [3,4,6,3], [64,128,256,512], conv1_params, num_classes)
 
 
 # ================================
@@ -191,7 +230,7 @@ def run_orion_resnet_demo():
     print("\n3️⃣ Creating ResNet Model")
     print("-" * 30)
     
-    net = ResNet8()
+    net = ResNet10()
     print("✅ Created ResNet8 for CIFAR-10 (minimal version):")
     print("   - Initial conv: Conv2d(3, 16, kernel_size=3)")
     print("   - Layer 1: 1 BasicBlock with 16 channels")
@@ -312,7 +351,7 @@ def run_orion_resnet_demo():
         module = translator.translate(
             operations, 
             scheme_params,
-            function_name="resnet8_inference"
+            function_name="resnet10"
         )
         # Generate MLIR output
         from xdsl.printer import Printer
@@ -324,12 +363,12 @@ def run_orion_resnet_demo():
         mlir_output = output_buffer.getvalue()
         
         # Save MLIR output
-        output_path = Path("resnet8_fhe.mlir")
+        output_path = Path("resnet10_fhe.mlir")
         output_path.write_text(mlir_output)
         
         print(f"✅ HEIR MLIR generated and saved to {output_path}")
         print(f"📄 Output file size: {len(mlir_output)} characters")
-        print(f"📄 Lines of MLIR: {len(mlir_string.splitlines())}")
+        print(f"📄 Lines of MLIR: {len(mlir_output.splitlines())}")
         
         # Show a preview
         lines = mlir_output.split('\n')
@@ -376,3 +415,5 @@ if __name__ == "__main__":
     
     print(f"\n{'🎉 Success!' if exit_code == 0 else '💥 Failed!'}")
     sys.exit(exit_code)
+
+
