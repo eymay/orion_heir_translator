@@ -16,7 +16,6 @@ from xdsl.irdl import (
     irdl_attr_definition,
     irdl_op_definition,
     operand_def,
-    opt_prop_def,
     prop_def,
     result_def,
     traits_def,
@@ -29,7 +28,7 @@ from xdsl.traits import Pure, Commutative
 
 # Import our custom dialects - this ensures they are loaded when CKKS is loaded
 from .lwe import LWE, NewLWECiphertextType, NewLWEPlaintextType
-from .polynomial import Polynomial, RingAttr
+from .polynomial import RingAttr
 from .mod_arith import ModArith
 from .rns import RNS
 
@@ -61,61 +60,61 @@ class SchemeParamAttr(ParametrizedAttribute):
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
         """Parse CKKS scheme parameters."""
         parser.parse_punctuation("<")
-        
+
         # Parse "logN = value"
         parser.parse_keyword("logN")
         parser.parse_punctuation("=")
         logN_value = parser.parse_integer()
         logN_attr = IntegerAttr.from_int_and_width(logN_value, 64)
-        
+
         parser.parse_punctuation(",")
-        
+
         # Parse "Q = [val1, val2, ...]"
         parser.parse_keyword("Q")
         parser.parse_punctuation("=")
         parser.parse_punctuation("[")
-        
+
         Q_values = []
         # Parse first value
         Q_values.append(parser.parse_integer())
-        
+
         # Parse remaining values
         while parser.parse_optional_punctuation(","):
             Q_values.append(parser.parse_integer())
-        
+
         parser.parse_punctuation("]")
         Q_attrs = [IntegerAttr.from_int_and_width(val, 64) for val in Q_values]
         Q_array = ArrayAttr(Q_attrs)
-        
+
         parser.parse_punctuation(",")
-        
+
         # Parse "P = [val1, val2, ...]"
         parser.parse_keyword("P")
         parser.parse_punctuation("=")
         parser.parse_punctuation("[")
-        
+
         P_values = []
         # Parse first value
         P_values.append(parser.parse_integer())
-        
-        # Parse remaining values  
+
+        # Parse remaining values
         while parser.parse_optional_punctuation(","):
             P_values.append(parser.parse_integer())
-        
+
         parser.parse_punctuation("]")
         P_attrs = [IntegerAttr.from_int_and_width(val, 64) for val in P_values]
         P_array = ArrayAttr(P_attrs)
-        
+
         parser.parse_punctuation(",")
-        
+
         # Parse "logDefaultScale = value"
         parser.parse_keyword("logDefaultScale")
         parser.parse_punctuation("=")
         logDefaultScale_value = parser.parse_integer()
         logDefaultScale_attr = IntegerAttr.from_int_and_width(logDefaultScale_value, 64)
-        
+
         parser.parse_punctuation(">")
-        
+
         return [logN_attr, Q_array, P_array, logDefaultScale_attr]
 
     def print_parameters(self, printer: Printer) -> None:
@@ -123,19 +122,19 @@ class SchemeParamAttr(ParametrizedAttribute):
         printer.print_string("<logN = ")
         printer.print_string(str(self.logN.value.data))
         printer.print_string(", Q = [")
-        
+
         for i, q_val in enumerate(self.Q.data):
             if i > 0:
                 printer.print_string(", ")
             printer.print_string(str(q_val.value.data))
-        
+
         printer.print_string("], P = [")
-        
+
         for i, p_val in enumerate(self.P.data):
             if i > 0:
                 printer.print_string(", ")
             printer.print_string(str(p_val.value.data))
-        
+
         printer.print_string("], logDefaultScale = ")
         printer.print_string(str(self.logDefaultScale.value.data))
         printer.print_string(">")
@@ -204,7 +203,7 @@ class MulOp(IRDLOperation):
 
     traits = traits_def(
         Pure(),
-        Commutative(), 
+        Commutative(),
         SameOperandsAndResultRings()
     )
     assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
@@ -392,114 +391,30 @@ class ExtractOp(IRDLOperation):
     assembly_format = "$input `,` $offset attr-dict `:` `(` type($input) `,` type($offset) `)` `->` type($result)"
 
 
-
-@irdl_op_definition
-class LinearTransformOp(IRDLOperation):
-    """
-    Linear transformation operation in CKKS.
-    
-    This operation performs a linear transformation using precomputed diagonal plaintexts.
-    It takes a ciphertext input and plaintext weights (diagonals) as inputs.
-    
-    Example: 
-    %result = ckks.linear_transform %ciphertext, %weights : (!ct, !pt) -> !ct
-    """
-    
-    name = "ckks.linear_transform"
-    
-    # Two inputs: input ciphertext and cleartext weights
-    input = operand_def(NewLWECiphertextType)
-    weights = operand_def(TensorType)
-    result = result_def(NewLWECiphertextType)
-    
-    traits = traits_def(Pure())
-    
-    assembly_format = "$input `,` $weights attr-dict `:` `(` type($input) `,` type($weights) `)` `->` type($result)"
-
-
-@irdl_op_definition
-class ChebyshevOp(IRDLOperation):
-    """
-    CKKS Chebyshev polynomial evaluation operation.
-    
-    Evaluates a Chebyshev polynomial series on a ciphertext using pre-computed
-    coefficients. This operation directly maps to OpenFHE's EvalChebyshevSeries.
-    
-    Syntax:
-    ```mlir
-    %result = ckks.chebyshev %input {
-        coefficients = [1.0, 0.0, -0.33333, 0.0, 0.2, ...],
-        domain_start = -1.0,
-        domain_end = 1.0
-    } : (!ckks.ciphertext) -> !ckks.ciphertext
-    ```
-    
-    Attributes:
-    - coefficients: Array of Chebyshev polynomial coefficients (required)
-    - domain_start: Start of approximation domain (default: -1.0)  
-    - domain_end: End of approximation domain (default: 1.0)
-    
-    The coefficients correspond to the Chebyshev series:
-    f(x) = c₀T₀(x) + c₁T₁(x) + c₂T₂(x) + ... + cₙTₙ(x)
-    
-    where Tᵢ(x) are Chebyshev polynomials of the first kind.
-    """
-    
-    name = "ckks.chebyshev"
-    
-    # Input ciphertext to evaluate polynomial on
-    input = operand_def(NewLWECiphertextType)
-    
-    # Chebyshev polynomial coefficients (required)
-    coefficients = prop_def(ArrayAttr[FloatAttr])
-    
-    # Domain of approximation (optional, defaults to [-1, 1])
-    domain_start = prop_def(FloatAttr, default=FloatAttr(-1.0, f64))
-    domain_end = prop_def(FloatAttr, default=FloatAttr(1.0, f64))
-    
-    # Result ciphertext
-    result = result_def(NewLWECiphertextType)
-    
-    irdl_options = [ParsePropInAttrDict()]
-    assembly_format = "$input attr-dict `:` `(` type($input)  `)` `->` type($result)"
-    
-    @property
-    def degree(self) -> int:
-        """Get the degree of the Chebyshev polynomial."""
-        return len(self.coefficients.data) - 1
-    
-    def get_coefficients(self) -> list[float]:
-        """Get the coefficients as a Python list."""
-        return [float(attr.value) for attr in self.coefficients.data]
-    
-    def get_domain(self) -> tuple[float, float]:
-        """Get the approximation domain as (start, end) tuple."""
-        return (float(self.domain_start.value), float(self.domain_end.value))
-
 @irdl_op_definition
 class BootstrapOp(IRDLOperation):
     """
     Bootstrap operation for CKKS ciphertexts.
-    
+
     Refreshes a ciphertext by reducing noise and resetting the level.
     This is essential for deep computations in FHE where noise accumulates
     and levels are consumed.
-    
+
     The bootstrap operation conceptually performs:
     1. Decrypt the ciphertext (in the encrypted domain)
     2. Re-encrypt with fresh noise and full level
     3. Return refreshed ciphertext
-    
+
     Example: %refreshed = ckks.bootstrap %input : !lwe.new_lwe_ciphertext -> !lwe.new_lwe_ciphertext
     """
-    
+
     name = "ckks.bootstrap"
-    
+
     input = operand_def(NewLWECiphertextType)
     result = result_def(NewLWECiphertextType)
-    
+
     traits = traits_def(Pure())
-    
+
     assembly_format = "$input attr-dict `:` type($input) `->` type($result)"
 
 
@@ -516,9 +431,6 @@ CKKS = Dialect(
         RelinearizeOp,
         RescaleOp,
         RotateOp,
-        ExtractOp,
-        LinearTransformOp,
-        ChebyshevOp,
         BootstrapOp,
     ],
     [
