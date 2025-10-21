@@ -26,7 +26,7 @@ from xdsl.dialects.builtin import (
 from xdsl.dialects.func import FuncOp
 from xdsl.dialects.arith import ConstantOp
 from ..dialects.orion import LinearTransformOp
-from ..dialects.lwe import RLWEEncodeOp
+from ..dialects.lwe import RLWEEncodeOp, LWEPlaintextType
 from .translator import FHEOperation
 from ..dialects.ckks import (
     AddOp,
@@ -41,6 +41,15 @@ from ..dialects.ckks import (
 
 
 import numpy as np
+
+
+def get_parent_func(block: Block) -> FuncOp:
+    # Constants are big, so instead write the stacked diagonal data to disk
+    # and add a new func argument for it, with metadata attached.
+    func_op = block.parent_op()
+    while not isinstance(func_op, FuncOp):
+        func_op = func_op.parent_op()
+    return func_op
 
 
 class OperationHandler(Protocol):
@@ -211,12 +220,33 @@ class CKKSPlaintextHandler(BaseOperationHandler):
         print(f"🔧 Processing {operation.op_type} operation: {operation.result_var}")
 
         # Get plaintext operand
+        # FIXME: figure out how to not write the ConstantOp
         plaintext = self._get_plaintext_operand(operation, constants)
         if plaintext is None:
             print(f"❌ No plaintext operand found for {operation.op_type}")
             return current_value
 
         print("✅ Found plaintext operand")
+        print(f"    Operation metadata: {operation.metadata}")
+
+        # Extract bias into a new function argument
+        ct_ty = current_value.type
+        plaintext_type = LWEPlaintextType([ct_ty.application_data, ct_ty.plaintext_space])
+        if operation.metadata["operation"] == "bias_addition":
+            layer_name = operation.metadata.get("layer", "unknown_layer")
+            func_op = get_parent_func(block)
+            new_arg_index = len(func_op.args)
+            new_arg_attrs = func_op.arg_attrs.data + (
+                DictionaryAttr(
+                    {
+                        "orion.layer_name": StringAttr(layer_name),
+                        "orion.layer_role": StringAttr("bias"),
+                    }
+                ),
+            )
+            plaintext = block.insert_arg(arg_type=plaintext_type, index=new_arg_index)
+            func_op.properties["arg_attrs"] = ArrayAttr(new_arg_attrs)
+            func_op.update_function_type()
 
         # Create the operation
         op_instance = self.op_class(
@@ -595,26 +625,29 @@ class LinearTransformHandler(BaseOperationHandler):
         print(f"         ✅ Stacked {len(diagonal_indices)} diagonals into single transform")
 
         # Create tensor arg for pre-packed plaintext diagonals
+        # NOTE: the application_data field here is incorrect, but it doesn't
+        # matter unless we want to use the debugging helper. See
+        # https://github.com/google/heir/issues/2280
         plaintext_type = type_builder.get_default_plaintext_type()
         plaintext_tensor_shape = [len(diagonal_indices)]
         plaintext_tensor_type = TensorType(plaintext_type, plaintext_tensor_shape)
 
-        # Constants are big, so instead write the stacked diagonal data to disk
-        # and add a new func argument for it, with metadata attached.
-        func_op = block.parent_op()
-        while not isinstance(func_op, FuncOp):
-            func_op = func_op.parent_op()
-
+        func_op = get_parent_func(block)
         layer_name = orion_metadata.get("layer", "unknown_layer")
         new_arg_index = len(func_op.args)
-        new_arg_attrs = func_op.arg_attrs.data + (DictionaryAttr(
-            {
-                "orion.layer_name": StringAttr(layer_name),
-                "orion.block_row": IntegerAttr.from_int_and_width(row, 64),
-                "orion.block_col": IntegerAttr.from_int_and_width(col, 64),
-            }),
+        new_arg_attrs = func_op.arg_attrs.data + (
+            DictionaryAttr(
+                {
+                    "orion.layer_name": StringAttr(layer_name),
+                    "orion.layer_role": StringAttr("weights"),
+                    "orion.block_row": IntegerAttr.from_int_and_width(row, 64),
+                    "orion.block_col": IntegerAttr.from_int_and_width(col, 64),
+                }
+            ),
         )
-        inserted_diagonals_block_arg = block.insert_arg(arg_type=plaintext_tensor_type, index=new_arg_index)
+        inserted_diagonals_block_arg = block.insert_arg(
+            arg_type=plaintext_tensor_type, index=new_arg_index
+        )
         func_op.properties["arg_attrs"] = ArrayAttr(new_arg_attrs)
         func_op.update_function_type()
 
