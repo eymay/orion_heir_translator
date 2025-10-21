@@ -4,11 +4,12 @@ An Orion entry dialect for HEIR.
 Just handles the ops not in ORION.
 """
 
-from xdsl.dialects.builtin import FloatAttr, ArrayAttr, f64
+from xdsl.dialects.builtin import FloatAttr, ArrayAttr, f64, TensorType
 from xdsl.ir import Dialect
 from xdsl.irdl import (
     IRDLOperation,
     ParsePropInAttrDict,
+    base,
     irdl_op_definition,
     operand_def,
     prop_def,
@@ -36,9 +37,8 @@ class LinearTransformOp(IRDLOperation):
 
     name = "orion.linear_transform"
 
-    # Two inputs: input ciphertext and plaintext weights
     input = operand_def(NewLWECiphertextType)
-    weights = operand_def(NewLWEPlaintextType)
+    weights = operand_def(base(TensorType[NewLWEPlaintextType]))
     result = result_def(NewLWECiphertextType)
 
     traits = traits_def(Pure())

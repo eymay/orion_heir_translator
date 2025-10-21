@@ -8,7 +8,7 @@ different frontends (Orion, OpenFHE, SEAL, etc.).
 from typing import Dict, List, Any
 
 from xdsl.ir import SSAValue, Block, Region
-from xdsl.dialects.builtin import ModuleOp, FunctionType
+from xdsl.dialects.builtin import ArrayAttr, DictionaryAttr, ModuleOp, FunctionType
 from xdsl.dialects.func import FuncOp, ReturnOp
 from xdsl.context import Context
 
@@ -72,6 +72,7 @@ class GenericTranslator:
         
         # Create function containing the operations
         func = self._create_function(operations, type_builder, function_name)
+        func.update_function_type()
         module.body.block.add_op(func)
         fixes_applied = fix_encode_operations(module, type_builder)
     
@@ -100,7 +101,8 @@ class GenericTranslator:
         func_type = FunctionType.from_lists([input_type], [input_type])
         func = FuncOp(name=function_name, function_type=func_type, region=Region.DEFAULT)
         entry_block = func.body.blocks.first
-        
+        func.arg_attrs = ArrayAttr([DictionaryAttr({}) for _ in range(len(entry_block.args))])
+
         # Simple constants dictionary - just stores operation results by name
         constants = {}
         current_value = entry_block.args[0]  # Function input

@@ -10,15 +10,20 @@ from abc import ABC, abstractmethod
 
 from xdsl.ir import SSAValue, Block
 from xdsl.dialects.builtin import (
+    ArrayAttr,
     DenseArrayBase,
     DenseIntOrFPElementsAttr,
+    DictionaryAttr,
     FloatAttr,
+    FunctionType,
     IntegerAttr,
     IntegerType,
+    StringAttr,
     TensorType,
     f64,
     i32,
 )
+from xdsl.dialects.func import FuncOp
 from xdsl.dialects.arith import ConstantOp
 from ..dialects.orion import LinearTransformOp
 from ..dialects.lwe import RLWEEncodeOp
@@ -589,33 +594,38 @@ class LinearTransformHandler(BaseOperationHandler):
 
         print(f"         ✅ Stacked {len(diagonal_indices)} diagonals into single transform")
 
-        # Create constant for stacked diagonal data
-        # total_elements = len(diagonal_indices) * slots
-        tensor_shape = [len(diagonal_indices), slots]
-        tensor_type = TensorType(f64, tensor_shape)
-
-        dense_attr = DenseIntOrFPElementsAttr.create_dense_float(tensor_type, stacked_diagonal_data)
-        const_op = ConstantOp(dense_attr, tensor_type)
-        block.add_op(const_op)
-
-        # Encode to LWE plaintext
+        # Create tensor arg for pre-packed plaintext diagonals
         plaintext_type = type_builder.get_default_plaintext_type()
-        encode_op = RLWEEncodeOp(
-            operands=[const_op.results[0]],
-            result_types=[plaintext_type],
-            attributes={"encoding": type_builder.base_encoding, "ring": type_builder.ring_f64},
+        plaintext_tensor_shape = [len(diagonal_indices)]
+        plaintext_tensor_type = TensorType(plaintext_type, plaintext_tensor_shape)
+
+        # Constants are big, so instead write the stacked diagonal data to disk
+        # and add a new func argument for it, with metadata attached.
+        func_op = block.parent_op()
+        while not isinstance(func_op, FuncOp):
+            func_op = func_op.parent_op()
+
+        layer_name = orion_metadata.get("layer", "unknown_layer")
+        new_arg_index = len(func_op.args)
+        new_arg_attrs = func_op.arg_attrs.data + (DictionaryAttr(
+            {
+                "orion.layer_name": StringAttr(layer_name),
+                "orion.block_row": IntegerAttr.from_int_and_width(row, 64),
+                "orion.block_col": IntegerAttr.from_int_and_width(col, 64),
+            }),
         )
-        block.add_op(encode_op)
+        inserted_diagonals_block_arg = block.insert_arg(arg_type=plaintext_tensor_type, index=new_arg_index)
+        func_op.properties["arg_attrs"] = ArrayAttr(new_arg_attrs)
+        func_op.update_function_type()
 
-        # Create attributes for this block
+        # FIXME: write stacked_diagonal_data to disk for later loading
+
         attributes = self._create_block_attributes(block_key, diagonal_indices, orion_metadata)
-
-        # Create the linear transform operation
         result_type = type_builder.infer_plaintext_result_type(
-            "mul_plain", input_tensor.type, encode_op.results[0].type
+            "mul_plain", input_tensor.type, inserted_diagonals_block_arg.type
         )
         linear_transform_op = LinearTransformOp(
-            operands=[input_tensor, encode_op.results[0]],
+            operands=[input_tensor, inserted_diagonals_block_arg],
             result_types=[result_type],
             attributes=attributes,
         )
