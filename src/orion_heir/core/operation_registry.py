@@ -7,6 +7,7 @@ allowing for easy extension and customization of translation behavior.
 
 from typing import Dict, Any, Protocol, List
 from abc import ABC, abstractmethod
+import torch
 
 from xdsl.ir import SSAValue, Block
 from xdsl.dialects.builtin import (
@@ -41,6 +42,12 @@ from ..dialects.ckks import (
 
 
 import numpy as np
+
+
+def get_constant_operand(operation: FHEOperation) -> Any:
+    for arg in operation.args or []:
+        if isinstance(arg, torch.Tensor):
+            return arg
 
 
 def get_parent_func(block: Block) -> FuncOp:
@@ -218,16 +225,10 @@ class CKKSPlaintextHandler(BaseOperationHandler):
         """Handle CKKS plaintext operations (add_plain, mul_plain)."""
 
         print(f"🔧 Processing {operation.op_type} operation: {operation.result_var}")
+        print(f"    Operation metadata: {operation.metadata}")
 
         # Get plaintext operand
-        # FIXME: figure out how to not write the ConstantOp
-        plaintext = self._get_plaintext_operand(operation, constants)
-        if plaintext is None:
-            print(f"❌ No plaintext operand found for {operation.op_type}")
-            return current_value
-
-        print("✅ Found plaintext operand")
-        print(f"    Operation metadata: {operation.metadata}")
+        cleartext_operand = get_constant_operand(operation)
 
         # Extract bias into a new function argument
         ct_ty = current_value.type
@@ -247,6 +248,12 @@ class CKKSPlaintextHandler(BaseOperationHandler):
             plaintext = block.insert_arg(arg_type=plaintext_type, index=new_arg_index)
             func_op.properties["arg_attrs"] = ArrayAttr(new_arg_attrs)
             func_op.update_function_type()
+
+            # FIXME: write plaintext constant data to disk for later loading
+        else:
+            plaintext = self._get_plaintext_operand(operation, constants)
+            if not plaintext:
+                raise ValueError(f"No plaintext operand found for {operation.op_type}")
 
         # Create the operation
         op_instance = self.op_class(
@@ -356,33 +363,34 @@ class LWEEncodingHandler(BaseOperationHandler):
     ) -> SSAValue:
         """Handle encoding operations with matching application data."""
         print(f"🔧 Processing encode operation: {operation.result_var}")
+        return current_value
 
-        if not operation.args:
-            print("❌ No tensor argument found")
-            return current_value
+        # if not operation.args:
+        #     print("❌ No tensor argument found")
+        #     return current_value
 
-        # Get the tensor and create constant
-        tensor_arg = operation.args[0]
-        print(f"    Encoding tensor with shape: {tensor_arg.shape}")
+        # # Get the tensor and create constant
+        # tensor_arg = operation.args[0]
+        # print(f"    Encoding tensor with shape: {tensor_arg.shape}")
 
-        target_scale = None
-        if hasattr(operation, "metadata") and "target_scale" in operation.metadata:
-            target_scale = operation.metadata["target_scale"]
+        # target_scale = None
+        # if hasattr(operation, "metadata") and "target_scale" in operation.metadata:
+        #     target_scale = operation.metadata["target_scale"]
 
-        encoded_plaintext = type_builder.create_slot_based_plaintext_encoding(
-            block, tensor_arg, target_scale
-        )
+        # encoded_plaintext = type_builder.create_slot_based_plaintext_encoding(
+        #     block, tensor_arg, target_scale
+        # )
 
-        slots = getattr(
-            type_builder.scheme_params, "slots", type_builder.scheme_params.ring_degree // 2
-        )
-        print(f"✅ Created slot-based encoding (padded to {slots} slots)")
+        # slots = getattr(
+        #     type_builder.scheme_params, "slots", type_builder.scheme_params.ring_degree // 2
+        # )
+        # print(f"✅ Created slot-based encoding (padded to {slots} slots)")
 
-        # Store result
-        if operation.result_var:
-            constants[operation.result_var] = encoded_plaintext
+        # # Store result
+        # if operation.result_var:
+        #     constants[operation.result_var] = encoded_plaintext
 
-        return encoded_plaintext
+        # return encoded_plaintext
 
 
 class OperationRegistry:

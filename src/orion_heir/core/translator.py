@@ -15,7 +15,6 @@ from xdsl.context import Context
 from .types import FHEOperation, SchemeParameters, FrontendInterface
 from .operation_registry import OperationRegistry
 from .type_builder import TypeBuilder
-from .constants import ConstantManager
 from ..frontends.orion.orion_frontend import fix_encode_operations
 
 
