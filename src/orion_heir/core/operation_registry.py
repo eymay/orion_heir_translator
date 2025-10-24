@@ -228,11 +228,11 @@ class CKKSPlaintextHandler(BaseOperationHandler):
         print(f"    Operation metadata: {operation.metadata}")
 
         # Get plaintext operand
-        cleartext_operand = get_constant_operand(operation)
-
-        # Extract bias into a new function argument
         ct_ty = current_value.type
-        plaintext_type = LWEPlaintextType([ct_ty.application_data, ct_ty.plaintext_space])
+        slots = type_builder.scheme_params.ring_degree // 2
+
+        # Extract bias into a new cleartext function argument
+        new_argument_type = TensorType(shape=[slots], element_type=f64)
         if operation.metadata["operation"] == "bias_addition":
             layer_name = operation.metadata.get("layer", "unknown_layer")
             func_op = get_parent_func(block)
@@ -242,18 +242,30 @@ class CKKSPlaintextHandler(BaseOperationHandler):
                     {
                         "orion.layer_name": StringAttr(layer_name),
                         "orion.layer_role": StringAttr("bias"),
+                        "orion.level": IntegerAttr.from_int_and_width(operation.level, 64),
                     }
                 ),
             )
-            plaintext = block.insert_arg(arg_type=plaintext_type, index=new_arg_index)
+            cleartext = block.insert_arg(arg_type=new_argument_type, index=new_arg_index)
             func_op.properties["arg_attrs"] = ArrayAttr(new_arg_attrs)
             func_op.update_function_type()
-
-            # FIXME: write plaintext constant data to disk for later loading
         else:
-            plaintext = self._get_plaintext_operand(operation, constants)
-            if not plaintext:
-                raise ValueError(f"No plaintext operand found for {operation.op_type}")
+            cleartext = self._get_plaintext_operand(operation, constants)
+            if not cleartext:
+                raise ValueError(f"No cleartext operand found for {operation.op_type}")
+
+        # encode the cleartext
+        plaintext_type = LWEPlaintextType([ct_ty.application_data, ct_ty.plaintext_space])
+        encode_op = RLWEEncodeOp(
+            operands=[cleartext],
+            result_types=[plaintext_type],
+            attributes={
+                "encoding": ct_ty.plaintext_space.encoding,
+                "ring": ct_ty.plaintext_space.ring,
+            },
+        )
+        block.add_op(encode_op)
+        plaintext = encode_op.results[0]
 
         # Create the operation
         op_instance = self.op_class(
@@ -632,14 +644,9 @@ class LinearTransformHandler(BaseOperationHandler):
 
         print(f"         ✅ Stacked {len(diagonal_indices)} diagonals into single transform")
 
-        # Create tensor arg for pre-packed plaintext diagonals
-        # NOTE: the application_data field here is incorrect, but it doesn't
-        # matter unless we want to use the debugging helper. See
-        # https://github.com/google/heir/issues/2280
-        plaintext_type = type_builder.get_default_plaintext_type()
-        plaintext_tensor_shape = [len(diagonal_indices)]
-        plaintext_tensor_type = TensorType(plaintext_type, plaintext_tensor_shape)
-
+        # Create tensor arg for pre-packed cleartext diagonals
+        cleartext_tensor_shape = [len(diagonal_indices), slots]
+        cleartext_tensor_type = TensorType(f64, cleartext_tensor_shape)
         func_op = get_parent_func(block)
         layer_name = orion_metadata.get("layer", "unknown_layer")
         new_arg_index = len(func_op.args)
@@ -650,16 +657,15 @@ class LinearTransformHandler(BaseOperationHandler):
                     "orion.layer_role": StringAttr("weights"),
                     "orion.block_row": IntegerAttr.from_int_and_width(row, 64),
                     "orion.block_col": IntegerAttr.from_int_and_width(col, 64),
+                    "orion.level": IntegerAttr.from_int_and_width(orion_metadata["orion_level"], 64),
                 }
             ),
         )
         inserted_diagonals_block_arg = block.insert_arg(
-            arg_type=plaintext_tensor_type, index=new_arg_index
+            arg_type=cleartext_tensor_type, index=new_arg_index
         )
         func_op.properties["arg_attrs"] = ArrayAttr(new_arg_attrs)
         func_op.update_function_type()
-
-        # FIXME: write stacked_diagonal_data to disk for later loading
 
         attributes = self._create_block_attributes(block_key, diagonal_indices, orion_metadata)
         result_type = type_builder.infer_plaintext_result_type(

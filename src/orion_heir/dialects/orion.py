@@ -38,7 +38,12 @@ class LinearTransformOp(IRDLOperation):
     name = "orion.linear_transform"
 
     input = operand_def(NewLWECiphertextType)
-    weights = operand_def(base(TensorType[NewLWEPlaintextType]))
+
+    # Use cleartext types because BSGS implementation will rotate some of the
+    # plaintexts and it's better to decode them live rather than decode,
+    # rotate, then re-encode, Best would be to pre-rotate and store, but this
+    # depends on the BSGS implementation which Orion doesn't know about.
+    weights = operand_def(base(TensorType[f64]))
     result = result_def(NewLWECiphertextType)
 
     traits = traits_def(Pure())
