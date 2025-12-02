@@ -9,7 +9,7 @@ from typing import Dict, Callable, Any, Protocol, List, Optional
 from abc import ABC, abstractmethod
 
 from xdsl.ir import SSAValue, Block
-from xdsl.dialects.builtin import IntegerAttr, IntegerType, FloatAttr, i32, f64, DenseArrayBase
+from xdsl.dialects.builtin import IntegerAttr, IntegerType, FloatAttr, i32, i64, f64, DenseArrayBase
 
 from .translator import FHEOperation
 
@@ -249,7 +249,7 @@ class CKKSRotationHandler(BaseOperationHandler):
         rotate_op = RotateOp(
             operands=[current_value],
             result_types=[result_type],
-            properties={"offset": IntegerAttr(offset, IntegerType(32))}
+            properties={"offset": IntegerAttr(offset, IntegerType(64))}
         )
         
         block.add_op(rotate_op)
@@ -555,24 +555,24 @@ class CKKSLinearTransformHandler(BaseOperationHandler):
         block.add_op(const_op)
         
         # Encode to LWE plaintext
-        plaintext_type = type_builder.get_default_plaintext_type()
-        encode_op = RLWEEncodeOp(
-            operands=[const_op.results[0]],
-            result_types=[plaintext_type],
-            attributes={
-                "encoding": type_builder.base_encoding,
-                "ring": type_builder.ring_f64
-            }
-        )
-        block.add_op(encode_op)
+        # plaintext_type = type_builder.get_default_plaintext_type()
+        # encode_op = RLWEEncodeOp(
+        #     operands=[const_op.results[0]],
+        #     result_types=[plaintext_type],
+        #     attributes={
+        #         "encoding": type_builder.base_encoding,
+        #         "ring": type_builder.ring_f64
+        #     }
+        # )
+        # block.add_op(encode_op)
         
         # Create attributes for this block
         attributes = self._create_block_attributes(block_key, diagonal_indices, orion_metadata)
         
         # Create the linear transform operation
-        result_type = type_builder.infer_plaintext_result_type('mul_plain', input_tensor.type, encode_op.results[0].type)
+        result_type = type_builder.infer_plaintext_result_type('mul_plain', input_tensor.type, const_op.results[0].type)
         linear_transform_op = LinearTransformOp(
-            operands=[input_tensor, encode_op.results[0]],
+            operands=[input_tensor, const_op.results[0]],
             result_types=[result_type],
             attributes=attributes
         )

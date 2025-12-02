@@ -6,7 +6,7 @@ Provides CKKS homomorphic encryption operations and attributes
 from collections.abc import Sequence
 from typing import ClassVar
 
-from xdsl.dialects.builtin import IntegerAttr, FloatAttr, IndexType, ArrayAttr, DenseArrayBase, f64
+from xdsl.dialects.builtin import IntegerAttr, FloatAttr, IndexType, ArrayAttr, DenseArrayBase, f64, TensorType
 from xdsl.ir import Attribute, Dialect, ParametrizedAttribute, SSAValue
 from xdsl.irdl import (
     BaseAttr,
@@ -407,9 +407,9 @@ class LinearTransformOp(IRDLOperation):
     
     name = "ckks.linear_transform"
     
-    # Two inputs: input ciphertext and plaintext weights
+    # Two inputs: input ciphertext and cleartext weights
     input = operand_def(NewLWECiphertextType)
-    weights = operand_def(NewLWEPlaintextType)
+    weights = operand_def(TensorType)
     result = result_def(NewLWECiphertextType)
     
     traits = traits_def(Pure())
