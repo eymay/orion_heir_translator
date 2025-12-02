@@ -1526,17 +1526,6 @@ class OrionFrontend(FrontendInterface):
                 backend=getattr(orion_obj, 'backend', 'lattigo')
             )
     
-    def _create_default_scheme(self) -> OrionSchemeParameters:
-        """Create default scheme parameters for testing."""
-        return OrionSchemeParameters(
-            logN=13,
-            logQ=[55, 45, 45, 55],
-            logP=[55],
-            logScale=45,
-            slots=2**12,
-            ring_degree=2**13,
-            backend='lattigo'
-        )
 
 
 def create_orion_frontend() -> OrionFrontend:
