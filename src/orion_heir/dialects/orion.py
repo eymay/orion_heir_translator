@@ -26,16 +26,16 @@ from .lwe import NewLWECiphertextType, NewLWEPlaintextType
 @irdl_op_definition
 class LinearTransformOp(IRDLOperation):
     """
-    Linear transformation operation in ORION.
+    Linear transformation operation in CKKS (for compatibility with KeyMemRT).
 
     This operation performs a linear transformation using precomputed diagonal plaintexts.
-    It takes a ciphertext input and plaintext weights (diagonals) as inputs.
+    It takes a ciphertext input and cleartext weights (diagonals) as inputs.
 
     Example:
-    %result = orion.linear_transform %ciphertext, %weights : (!ct, !pt) -> !ct
+    %result = ckks.linear_transform %ciphertext, %weights : (!ct, tensor<NxMxf64>) -> !ct
     """
 
-    name = "orion.linear_transform"
+    name = "ckks.linear_transform"
 
     input = operand_def(NewLWECiphertextType)
 
