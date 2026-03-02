@@ -27,7 +27,7 @@ from xdsl.dialects.builtin import (
 from xdsl.dialects.func import FuncOp
 from xdsl.dialects.arith import ConstantOp
 from ..dialects.orion import LinearTransformOp
-from ..dialects.lwe import RLWEEncodeOp, LWEPlaintextType
+from ..dialects.lwe import RLWEEncodeOp, NewLWEPlaintextType as LWEPlaintextType
 from .translator import FHEOperation
 from ..dialects.ckks import (
     AddOp,
