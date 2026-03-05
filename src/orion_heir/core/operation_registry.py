@@ -341,7 +341,7 @@ class CKKSRotationHandler(BaseOperationHandler):
         rotate_op = RotateOp(
             operands=[current_value],
             result_types=[result_type],
-            properties={"offset": IntegerAttr(offset, IntegerType(32))},
+            properties={"offset": IntegerAttr(offset, IntegerType(64))},
         )
 
         block.add_op(rotate_op)
