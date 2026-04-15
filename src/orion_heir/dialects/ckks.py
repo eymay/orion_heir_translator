@@ -6,7 +6,15 @@ Provides CKKS homomorphic encryption operations and attributes
 from collections.abc import Sequence
 from typing import ClassVar
 
-from xdsl.dialects.builtin import IntegerAttr, FloatAttr, IndexType, ArrayAttr, DenseArrayBase, f64, TensorType
+from xdsl.dialects.builtin import (
+    IntegerAttr,
+    FloatAttr,
+    IndexType,
+    ArrayAttr,
+    DenseArrayBase,
+    f64,
+    TensorType,
+)
 from xdsl.ir import Attribute, Dialect, ParametrizedAttribute, SSAValue
 from xdsl.irdl import (
     BaseAttr,
@@ -37,7 +45,7 @@ from .lwe_traits import (
     SameOperandsAndResultPlaintextTypes,
     AllCiphertextTypesMatch,
     IsCiphertextPlaintextOp,
-    AllTypesMatch
+    AllTypesMatch,
 )
 
 
@@ -161,7 +169,9 @@ class AddOp(IRDLOperation):
         SameOperandsAndResultPlaintextTypes(),
     )
 
-    assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    assembly_format = (
+        "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    )
 
 
 @irdl_op_definition
@@ -184,7 +194,9 @@ class SubOp(IRDLOperation):
         SameOperandsAndResultPlaintextTypes(),
     )
 
-    assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    assembly_format = (
+        "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    )
 
 
 @irdl_op_definition
@@ -201,12 +213,10 @@ class MulOp(IRDLOperation):
     rhs = operand_def(NewLWECiphertextType)
     result = result_def(NewLWECiphertextType)
 
-    traits = traits_def(
-        Pure(),
-        Commutative(),
-        SameOperandsAndResultRings()
+    traits = traits_def(Pure(), Commutative(), SameOperandsAndResultRings())
+    assembly_format = (
+        "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
     )
-    assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
 
 
 @irdl_op_definition
@@ -252,7 +262,9 @@ class AddPlainOp(IRDLOperation):
         SameOperandsAndResultPlaintextTypes(),  # Derived plaintext types match
     )
 
-    assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    assembly_format = (
+        "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    )
 
 
 @irdl_op_definition
@@ -271,7 +283,9 @@ class SubPlainOp(IRDLOperation):
 
     traits = traits_def(Pure())
 
-    assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    assembly_format = (
+        "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    )
 
 
 @irdl_op_definition
@@ -294,7 +308,9 @@ class MulPlainOp(IRDLOperation):
         IsCiphertextPlaintextOp(),  # Ensures one ciphertext + one plaintext
     )
 
-    assembly_format = "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    assembly_format = (
+        "$lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)"
+    )
 
 
 @irdl_op_definition
@@ -388,7 +404,9 @@ class ExtractOp(IRDLOperation):
 
     traits = traits_def(Pure())
 
-    assembly_format = "$input `,` $offset attr-dict `:` `(` type($input) `,` type($offset) `)` `->` type($result)"
+    assembly_format = (
+        "$input `,` $offset attr-dict `:` `(` type($input) `,` type($offset) `)` `->` type($result)"
+    )
 
 
 @irdl_op_definition

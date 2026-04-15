@@ -657,7 +657,9 @@ class LinearTransformHandler(BaseOperationHandler):
                     "orion.layer_role": StringAttr("weights"),
                     "orion.block_row": IntegerAttr.from_int_and_width(row, 64),
                     "orion.block_col": IntegerAttr.from_int_and_width(col, 64),
-                    "orion.level": IntegerAttr.from_int_and_width(orion_metadata["orion_level"], 64),
+                    "orion.level": IntegerAttr.from_int_and_width(
+                        orion_metadata["orion_level"], 64
+                    ),
                 }
             ),
         )

@@ -25,10 +25,16 @@ from xdsl.irdl import (
     traits_def,
 )
 from xdsl.parser import Parser
-from .declarative_parser import parse_parameters_declarative, create_field_specs, FieldType, FieldSpec
+from .declarative_parser import (
+    parse_parameters_declarative,
+    create_field_specs,
+    FieldType,
+    FieldSpec,
+)
 from xdsl.printer import Printer
 from xdsl.traits import Pure
 from xdsl.utils.exceptions import ParseError
+
 # Import our custom dialects
 from .polynomial import RingAttr, PolynomialAttr
 
@@ -46,19 +52,19 @@ class InverseCanonicalEncodingAttr(ParametrizedAttribute):
         #lwe.inverse_canonical_encoding<scaling_factor = 0>
         """
         parser.parse_punctuation("<")
-        
+
         # Parse "scaling_factor"
         parser.parse_keyword("scaling_factor")
-        
+
         # Parse "="
         parser.parse_punctuation("=")
-        
+
         # Parse the integer value
         scaling_factor_value = parser.parse_integer()
         scaling_factor_attr = IntegerAttr.from_int_and_width(scaling_factor_value, 64)
-        
+
         parser.parse_punctuation(">")
-        
+
         return [scaling_factor_attr]
 
     def print_parameters(self, printer: Printer) -> None:
@@ -125,12 +131,11 @@ class ModulusChainAttr(ParametrizedAttribute):
     @classmethod
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
         """Parse modulus chain parameters declaratively."""
-        
+
         field_specs = create_field_specs(
-            elements=(FieldType.ARRAY_OF_INTEGERS, True),
-            current=(FieldType.INTEGER, True)
+            elements=(FieldType.ARRAY_OF_INTEGERS, True), current=(FieldType.INTEGER, True)
         )
-        
+
         return parse_parameters_declarative(parser, field_specs)
 
     def print_parameters(self, printer: Printer) -> None:
@@ -144,6 +149,7 @@ class ModulusChainAttr(ParametrizedAttribute):
         printer.print_string(">, current = ")
         printer.print_string(str(self.current.value.data))
         printer.print_string(">")
+
 
 @irdl_attr_definition
 class PlaintextSpaceAttr(ParametrizedAttribute):
@@ -162,19 +168,16 @@ class PlaintextSpaceAttr(ParametrizedAttribute):
     @classmethod
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
         """Parse ring and encoding parameters declaratively."""
-        
+
         # Import here to avoid circular imports
         from .polynomial import RingAttr
-        
+
         field_specs = create_field_specs(
             ring=(FieldType.FLEXIBLE_ATTRIBUTE, True, RingAttr),
-            encoding=(FieldType.ATTRIBUTE, True)
+            encoding=(FieldType.ATTRIBUTE, True),
         )
-        
+
         return parse_parameters_declarative(parser, field_specs)
-
-
-
 
     def print_parameters(self, printer: Printer) -> None:
         """Print ring and encoding parameters."""
@@ -183,7 +186,6 @@ class PlaintextSpaceAttr(ParametrizedAttribute):
         printer.print_string(", encoding = ")
         printer.print_attribute(self.encoding)
         printer.print_string(">")
-
 
 
 @irdl_attr_definition
@@ -204,18 +206,16 @@ class CiphertextSpaceAttr(ParametrizedAttribute):
     @classmethod
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
         """Parse ring, encryption_type, and size parameters declaratively."""
-        
+
         from .polynomial import RingAttr
-        
+
         field_specs = create_field_specs(
             ring=(FieldType.FLEXIBLE_ATTRIBUTE, True, RingAttr),
             encryption_type=(FieldType.IDENTIFIER, True),
-            size=(FieldType.INTEGER, False, 2)  # Optional with default value 2
+            size=(FieldType.INTEGER, False, 2),  # Optional with default value 2
         )
-        
+
         return parse_parameters_declarative(parser, field_specs)
-
-
 
     def get_alias_suffix(self, os) -> None:
         """Helper method for generating type aliases."""
@@ -263,6 +263,7 @@ class ApplicationDataAttr(ParametrizedAttribute):
         printer.print_attribute(self.message_type)
         printer.print_string(">")
 
+
 @irdl_attr_definition
 class NewLWEPlaintextType(ParametrizedAttribute, TypeAttribute):
     """
@@ -277,27 +278,27 @@ class NewLWEPlaintextType(ParametrizedAttribute, TypeAttribute):
     application_data: ParameterDef[ApplicationDataAttr]
     plaintext_space: ParameterDef[PlaintextSpaceAttr]
 
-    @classmethod  
+    @classmethod
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
         """Parse plaintext type parameters declaratively."""
-        
+
         field_specs = {
             "application_data": FieldSpec(
                 "application_data",
                 FieldType.NESTED_PARAMETERS,
                 required=True,
                 nested_parser=ApplicationDataAttr.parse_parameters,
-                attribute_class=ApplicationDataAttr
+                attribute_class=ApplicationDataAttr,
             ),
             "plaintext_space": FieldSpec(
-                "plaintext_space", 
+                "plaintext_space",
                 FieldType.NESTED_PARAMETERS,
                 required=True,
                 nested_parser=PlaintextSpaceAttr.parse_parameters,
-                attribute_class=PlaintextSpaceAttr
-            )
+                attribute_class=PlaintextSpaceAttr,
+            ),
         }
-        
+
         return parse_parameters_declarative(parser, field_specs)
 
     def print_parameters(self, printer: Printer) -> None:
@@ -326,58 +327,51 @@ class NewLWECiphertextType(ParametrizedAttribute, TypeAttribute):
     key: ParameterDef[KeyAttr]
     modulus_chain: ParameterDef[ModulusChainAttr]
 
-
     @classmethod
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
         """Parse all ciphertext type parameters declaratively."""
-        
+
         field_specs = {
             "application_data": FieldSpec(
-                "application_data", 
+                "application_data",
                 FieldType.NESTED_PARAMETERS,
                 required=True,
                 nested_parser=ApplicationDataAttr.parse_parameters,
-                attribute_class=ApplicationDataAttr
+                attribute_class=ApplicationDataAttr,
             ),
             "plaintext_space": FieldSpec(
                 "plaintext_space",
-                FieldType.NESTED_PARAMETERS, 
+                FieldType.NESTED_PARAMETERS,
                 required=True,
                 nested_parser=PlaintextSpaceAttr.parse_parameters,
-                attribute_class=PlaintextSpaceAttr
+                attribute_class=PlaintextSpaceAttr,
             ),
             "ciphertext_space": FieldSpec(
                 "ciphertext_space",
                 FieldType.NESTED_PARAMETERS,
-                required=True, 
+                required=True,
                 nested_parser=CiphertextSpaceAttr.parse_parameters,
-                attribute_class=CiphertextSpaceAttr
+                attribute_class=CiphertextSpaceAttr,
             ),
-            "key": FieldSpec(
-                "key",
-                FieldType.ATTRIBUTE,
-                required=True
-            ),
+            "key": FieldSpec("key", FieldType.ATTRIBUTE, required=True),
             "modulus_chain": FieldSpec(
                 "modulus_chain",
                 FieldType.FLEXIBLE_ATTRIBUTE,
                 required=False,
-                attribute_class=ModulusChainAttr
-            )
+                attribute_class=ModulusChainAttr,
+            ),
         }
-        
+
         result = parse_parameters_declarative(parser, field_specs)
-        
+
         # If modulus_chain wasn't provided, create a default one
         if len(result) == 4:  # No modulus_chain
             empty_elements = ArrayAttr([])
-            default_current = IntegerAttr.from_int_and_width(0, 64) 
+            default_current = IntegerAttr.from_int_and_width(0, 64)
             default_modulus_chain = ModulusChainAttr([empty_elements, default_current])
             result.append(default_modulus_chain)
-        
+
         return result
-
-
 
     def print_parameters(self, printer: Printer) -> None:
         """Print all ciphertext type parameters."""
@@ -389,13 +383,12 @@ class NewLWECiphertextType(ParametrizedAttribute, TypeAttribute):
         self.ciphertext_space.print_parameters(printer)
         printer.print_string(", key = ")
         self.key.print_parameters(printer)
-        
+
         # Only print modulus_chain if it's not empty/default
-        if (hasattr(self.modulus_chain, 'elements') and 
-            len(self.modulus_chain.elements.data) > 0):
+        if hasattr(self.modulus_chain, "elements") and len(self.modulus_chain.elements.data) > 0:
             printer.print_string(", modulus_chain = ")
             self.modulus_chain.print_parameters(printer)
-        
+
         printer.print_string(">")
 
 
