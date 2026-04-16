@@ -10,8 +10,8 @@ authors = [
 ]
 description = "Standalone translator from Orion FHE to HEIR MLIR"
 readme = "README.md"
-license = {text = "Apache-2.0"}
-requires-python = ">=3.8"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10,<3.12"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -44,6 +44,7 @@ dev = [
     "isort>=5.0",
     "mypy>=0.900",
     "flake8>=4.0",
+    "pre-commit>=3.5",
 ]
 
 [project.urls]
