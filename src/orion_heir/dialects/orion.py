@@ -1,7 +1,7 @@
 """
 An Orion entry dialect for HEIR.
 
-Just handles the ops not in ORION.
+Just handles the ops not in Orion.
 """
 
 from xdsl.dialects.builtin import FloatAttr, ArrayAttr, f64, TensorType
@@ -20,31 +20,31 @@ from xdsl.irdl import (
 from xdsl.traits import Pure
 
 # Ensure LWE is loaded
-from .lwe import NewLWECiphertextType, NewLWEPlaintextType
+from orion_heir.dialects.lwe import LWECiphertextType
 
 
 @irdl_op_definition
 class LinearTransformOp(IRDLOperation):
     """
-    Linear transformation operation in CKKS (for compatibility with KeyMemRT).
+    Linear transformation operation in Orion.
 
     This operation performs a linear transformation using precomputed diagonal plaintexts.
     It takes a ciphertext input and cleartext weights (diagonals) as inputs.
 
     Example:
-    %result = ckks.linear_transform %ciphertext, %weights : (!ct, tensor<NxMxf64>) -> !ct
+    %result = orion.linear_transform %ciphertext, %weights : (!ct, !pt) -> !ct
     """
 
-    name = "ckks.linear_transform"
+    name = "orion.linear_transform"
 
-    input = operand_def(NewLWECiphertextType)
+    input = operand_def(LWECiphertextType)
 
     # Use cleartext types because BSGS implementation will rotate some of the
     # plaintexts and it's better to decode them live rather than decode,
     # rotate, then re-encode, Best would be to pre-rotate and store, but this
     # depends on the BSGS implementation which Orion doesn't know about.
     weights = operand_def(base(TensorType[f64]))
-    result = result_def(NewLWECiphertextType)
+    result = result_def(LWECiphertextType)
 
     traits = traits_def(Pure())
 
@@ -54,7 +54,7 @@ class LinearTransformOp(IRDLOperation):
 @irdl_op_definition
 class ChebyshevOp(IRDLOperation):
     """
-    ORION Chebyshev polynomial evaluation operation.
+    Orion Chebyshev polynomial evaluation operation.
 
     Evaluates a Chebyshev polynomial series on a ciphertext using pre-computed
     coefficients. This operation directly maps to OpenFHE's EvalChebyshevSeries.
@@ -82,7 +82,7 @@ class ChebyshevOp(IRDLOperation):
     name = "orion.chebyshev"
 
     # Input ciphertext to evaluate polynomial on
-    input = operand_def(NewLWECiphertextType)
+    input = operand_def(LWECiphertextType)
 
     # Chebyshev polynomial coefficients (required)
     coefficients = prop_def(ArrayAttr[FloatAttr])
@@ -92,7 +92,7 @@ class ChebyshevOp(IRDLOperation):
     domain_end = prop_def(FloatAttr, default=FloatAttr(1.0, f64))
 
     # Result ciphertext
-    result = result_def(NewLWECiphertextType)
+    result = result_def(LWECiphertextType)
 
     irdl_options = [ParsePropInAttrDict()]
     assembly_format = "$input attr-dict `:` `(` type($input)  `)` `->` type($result)"
@@ -111,7 +111,7 @@ class ChebyshevOp(IRDLOperation):
         return (float(self.domain_start.value), float(self.domain_end.value))
 
 
-ORION = Dialect(
+Orion = Dialect(
     "orion",
     [
         LinearTransformOp,

@@ -14,10 +14,9 @@ from typing import Optional, List, Any
 
 from xdsl.printer import Printer
 
-from ..core.translator import GenericTranslator
-from ..frontends.orion.orion_frontend import OrionFrontend
-from ..frontends.orion.operation_extractor import OrionOperationExtractor
-from .common_utils import setup_logging, validate_file_path, create_output_directory
+from orion_heir.core.translator import GenericTranslator
+from orion_heir.frontends.orion.orion_frontend import OrionFrontend
+from orion_heir.tools.common_utils import setup_logging, create_output_directory
 
 
 class OrionHeirDriver:
@@ -132,10 +131,7 @@ class OrionHeirDriver:
             elif suffix in [".yaml", ".yml"]:
                 data = yaml.safe_load(f)
             else:
-                # Try to parse as text
-                content = f.read()
-                extractor = OrionOperationExtractor()
-                return extractor._extract_from_string(content)
+                raise ValueError(f"Unsupported file format: {suffix}. Use .json or .yaml/.yml")
 
         # Extract operations from loaded data
         if isinstance(data, list):
@@ -273,19 +269,20 @@ def _validate_mlir(mlir_content: str) -> bool:
 
         context = Context()
         # Load necessary dialects
-        from ..dialects.ckks import CKKS
-        from ..dialects.lwe import LWE
-        from ..dialects.polynomial import Polynomial
-        from ..dialects.mod_arith import ModArith
-        from ..dialects.rns import RNS
-        from ..dialects.mgmt import MGMT
+        from orion_heir.dialects.ckks import CKKS
+        from orion_heir.dialects.lwe import LWE
+        from orion_heir.dialects.polynomial import Polynomial
+        from orion_heir.dialects.mod_arith import ModArith
+        from orion_heir.dialects.orion import Orion
+        from orion_heir.dialects.rns import RNS
+        from orion_heir.dialects.mgmt import MGMT
 
-        dialects = [CKKS, LWE, Polynomial, ModArith, RNS, MGMT]
+        dialects = [CKKS, LWE, Polynomial, ModArith, RNS, MGMT, Orion]
         for dialect in dialects:
             context.load_dialect(dialect)
 
         parser = Parser(context, StringIO(mlir_content))
-        module = parser.parse_module()
+        parser.parse_module()
 
         print("✅ MLIR validation passed")
         return True
@@ -327,9 +324,9 @@ def create_config(output: Path):
             "backend": "lattigo",
             "fuse_modules": True,
             "debug": False,
-            "diags_path": "",
-            "keys_path": "",
-            "io_mode": "none",
+            "diags_path": "data/diagonals.h5",
+            "keys_path": "data/keys.h5",
+            "io_mode": "save",
         },
     }
 

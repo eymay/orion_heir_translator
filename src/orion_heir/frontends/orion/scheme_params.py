@@ -5,10 +5,9 @@ This module provides Orion-specific scheme parameter handling,
 including integration with the actual Orion library when available.
 """
 
-from typing import List, Optional, Union
-import warnings
+from typing import List, Tuple, Union
 
-from ...core.types import SchemeParameters
+from orion_heir.core.types import SchemeParameters
 
 
 class OrionNotAvailableError(Exception):
@@ -34,7 +33,8 @@ class OrionSchemeParameters(SchemeParameters):
         slots: int,
         ring_degree: int,
         backend: str = "lattigo",
-        require_orion: bool = False,
+        keys_path: str = "data/keys.h5",
+        diags_path: str = "data/diagonals.h5",
     ):
         # Normalize logN to always be an integer for Orion
         self.logN = logN[0] if isinstance(logN, list) else logN
@@ -45,30 +45,16 @@ class OrionSchemeParameters(SchemeParameters):
         self.backend = backend
         self._ring_degree = ring_degree
         self._modulus_chain = None
-        self.require_orion = require_orion
-
-        # Try to get actual primes from Orion if available
-        self._actual_primes = self._get_actual_primes()
+        self._keys_path = keys_path
+        self._diags_path = diags_path
+        mod, aux = self._get_actual_primes()
+        self.ciphertext_modulus_chain = mod
+        self.auxiliary_modulus_chain = aux
 
     @property
     def ring_degree(self) -> int:
         """Ring degree of the polynomial."""
         return self._ring_degree
-
-    @property
-    def ciphertext_modulus_chain(self) -> List[int]:
-        """Chain of moduli for ciphertexts."""
-        if self._actual_primes:
-            return self._actual_primes
-
-        if self.require_orion:
-            raise OrionNotAvailableError(
-                "Orion FHE library is required but not available. "
-                "Please install orion-fhe or set require_orion=False to use fallback primes."
-            )
-
-        # Fallback to computed primes
-        return self._compute_fallback_primes()
 
     @property
     def plaintext_modulus(self) -> int:
@@ -86,124 +72,48 @@ class OrionSchemeParameters(SchemeParameters):
         """Logarithm of the ring degree."""
         return self.logN
 
-    def _get_actual_primes(self) -> Optional[List[int]]:
-        """
-        Get actual primes from Orion if available.
+    def _get_actual_primes(self) -> Tuple[List[int], List[int]]:
+        """Get selected primes from Orion."""
+        from orion.core.orion import Scheme
 
-        This method attempts to create an Orion scheme and extract
-        the actual moduli used. Falls back gracefully if Orion
-        is not available.
-        """
-        try:
-            from orion.core.orion import Scheme
+        config = {
+            "ckks_params": {
+                "LogN": self.logN,
+                "LogQ": self.logQ,
+                "LogP": self.logP,
+                "LogScale": self.logScale,
+                "H": 192,
+                "RingType": "standard",
+            },
+            "orion": {
+                "margin": 2,
+                "embedding_method": "hybrid",
+                "backend": self.backend,
+                "fuse_modules": True,
+                "debug": False,
+                "diags_path": self._diags_path,
+                "keys_path": self._keys_path,
+                "io_mode": "save",
+            },
+        }
 
-            # Create Orion config - ensure LogN is an integer, not a list
-            config = {
-                "ckks_params": {
-                    "LogN": self.logN,  # Now guaranteed to be an integer
-                    "LogQ": self.logQ,
-                    "LogP": self.logP,
-                    "LogScale": self.logScale,
-                    "H": 192,
-                    "RingType": "standard",
-                },
-                "orion": {
-                    "margin": 2,
-                    "embedding_method": "hybrid",
-                    "backend": self.backend,
-                    "fuse_modules": True,
-                    "debug": False,
-                    "diags_path": "data/diagonals.h5",
-                    "keys_path": "data/keys.h5",
-                    "io_mode": "none",
-                },
-            }
+        print(f"🔧 Initializing Orion with LogN={self.logN}, LogQ={self.logQ}")
 
-            print(f"🔧 Initializing Orion with LogN={self.logN}, LogQ={self.logQ}")
+        # Ensure the keys/diagonals directory exists before Orion writes to it
+        from pathlib import Path
 
-            # Initialize scheme
-            scheme = Scheme()
-            scheme.init_scheme(config)
+        Path(self._keys_path).parent.mkdir(parents=True, exist_ok=True)
 
-            # Get moduli
-            if hasattr(scheme, "encoder") and scheme.encoder is not None:
-                moduli = scheme.encoder.get_moduli_chain()
-                print(f"📊 Retrieved actual Orion moduli: {moduli}")
+        # Initialize scheme
+        scheme = Scheme()
+        scheme.init_scheme(config)
 
-                # Clean up
-                scheme.delete_scheme()
-                return moduli
-            else:
-                if self.require_orion:
-                    raise OrionNotAvailableError("Orion encoder not initialized properly")
-                warnings.warn("Orion encoder not initialized, using fallback primes")
-
-        except ImportError as e:
-            if self.require_orion:
-                raise OrionNotAvailableError(
-                    f"Orion FHE library is required but not installed. "
-                    f"Install with: pip install orion-fhe\n"
-                    f"Original error: {e}"
-                )
-            print("⚠️ Orion not available, using computed fallback primes")
-        except Exception as e:
-            if self.require_orion:
-                raise OrionNotAvailableError(f"Error initializing Orion: {e}")
-            warnings.warn(f"Error getting Orion primes: {e}, using fallback")
-
-        return None
-
-    def _compute_fallback_primes(self) -> List[int]:
-        """
-        Compute fallback primes when Orion is not available.
-
-        This generates reasonable prime values based on the
-        logarithmic specifications.
-        """
-        primes = []
-
-        # Generate primes based on logQ values
-        for log_q in self.logQ:
-            # Use a simple method to find a prime near 2^log_q
-            target = 2**log_q
-            prime = self._find_prime_near(target)
-            primes.append(prime)
-
-        print(f"📊 Using computed fallback primes: {primes}")
-        return primes
-
-    def _find_prime_near(self, target: int) -> int:
-        """
-        Find a prime number near the target value.
-
-        This is a simple implementation for fallback purposes.
-        """
-        # Start from target and work downwards
-        candidate = target - 1
-        if candidate % 2 == 0:
-            candidate -= 1
-
-        while candidate > target // 2:
-            if self._is_prime(candidate):
-                return candidate
-            candidate -= 2
-
-        # Fallback to target if no prime found
-        return target
-
-    def _is_prime(self, n: int) -> bool:
-        """Simple primality test for small numbers."""
-        if n < 2:
-            return False
-        if n == 2:
-            return True
-        if n % 2 == 0:
-            return False
-
-        for i in range(3, int(n**0.5) + 1, 2):
-            if n % i == 0:
-                return False
-        return True
+        # Get moduli
+        ciphertext_modulus_chain = scheme.encoder.get_moduli_chain()
+        # i.e., special primes for key switching
+        auxiliary_modulus_chain = scheme.encoder.get_aux_moduli_chain()
+        scheme.delete_scheme()
+        return (ciphertext_modulus_chain, auxiliary_modulus_chain)
 
     def to_dict(self) -> dict:
         """Convert parameters to dictionary representation."""
@@ -215,8 +125,8 @@ class OrionSchemeParameters(SchemeParameters):
             "slots": self.slots,
             "ring_degree": self.ring_degree,
             "backend": self.backend,
-            "require_orion": self.require_orion,
-            "actual_primes": self.ciphertext_modulus_chain,
+            "modulus_chain": self.ciphertext_modulus_chain,
+            "aux_modulus_chain": self.auxiliary_modulus_chain,
         }
 
     @classmethod
@@ -230,55 +140,37 @@ class OrionSchemeParameters(SchemeParameters):
             slots=data["slots"],
             ring_degree=data["ring_degree"],
             backend=data.get("backend", "lattigo"),
-            require_orion=data.get("require_orion", False),
         )
 
     def __repr__(self) -> str:
         return (
             f"OrionSchemeParameters(logN={self.logN}, logQ={self.logQ}, "
             f"logP={self.logP}, logScale={self.logScale}, "
-            f"slots={self.slots}, ring_degree={self.ring_degree}, "
-            f"require_orion={self.require_orion})"
+            f"slots={self.slots}, ring_degree={self.ring_degree})"
         )
 
 
-def create_default_orion_parameters(require_orion: bool = False) -> OrionSchemeParameters:
+def create_default_orion_parameters() -> OrionSchemeParameters:
     """Create default Orion parameters for testing."""
     return OrionSchemeParameters(
-        logN=13,  # Changed from [13] to 13
+        logN=13,
         logQ=[55, 45, 45, 55],
         logP=[55],
         logScale=45,
         slots=4096,
         ring_degree=8192,
         backend="lattigo",
-        require_orion=require_orion,
     )
 
 
-def create_mlp_orion_parameters(require_orion: bool = False) -> OrionSchemeParameters:
+def create_mlp_orion_parameters() -> OrionSchemeParameters:
     """Create Orion parameters suitable for MLP computations."""
     return OrionSchemeParameters(
-        logN=13,  # Changed from [13] to 13
+        logN=13,
         logQ=[60, 50, 50, 60],
         logP=[60],
         logScale=50,
         slots=4096,
         ring_degree=8192,
         backend="lattigo",
-        require_orion=require_orion,
-    )
-
-
-def create_orion_parameters_strict() -> OrionSchemeParameters:
-    """Create Orion parameters that require the actual Orion library."""
-    return OrionSchemeParameters(
-        logN=13,  # Changed from [13] to 13
-        logQ=[55, 45, 45, 55],
-        logP=[55],
-        logScale=45,
-        slots=4096,
-        ring_degree=8192,
-        backend="lattigo",
-        require_orion=True,  # This will hard fail if Orion is not available
     )

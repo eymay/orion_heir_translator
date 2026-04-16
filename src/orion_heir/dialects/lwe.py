@@ -6,9 +6,7 @@ Provides LWE cryptographic types and operations
 from collections.abc import Sequence
 
 from xdsl.dialects.builtin import (
-    IntAttr,
     IntegerAttr,
-    IntegerType,
     ArrayAttr,
     StringAttr,
     TensorType,
@@ -25,7 +23,7 @@ from xdsl.irdl import (
     traits_def,
 )
 from xdsl.parser import Parser
-from .declarative_parser import (
+from orion_heir.dialects.declarative_parser import (
     parse_parameters_declarative,
     create_field_specs,
     FieldType,
@@ -33,10 +31,9 @@ from .declarative_parser import (
 )
 from xdsl.printer import Printer
 from xdsl.traits import Pure
-from xdsl.utils.exceptions import ParseError
 
 # Import our custom dialects
-from .polynomial import RingAttr, PolynomialAttr
+from orion_heir.dialects.polynomial import RingAttr
 
 
 @irdl_attr_definition
@@ -170,7 +167,7 @@ class PlaintextSpaceAttr(ParametrizedAttribute):
         """Parse ring and encoding parameters declaratively."""
 
         # Import here to avoid circular imports
-        from .polynomial import RingAttr
+        from orion_heir.dialects.polynomial import RingAttr
 
         field_specs = create_field_specs(
             ring=(FieldType.FLEXIBLE_ATTRIBUTE, True, RingAttr),
@@ -207,7 +204,7 @@ class CiphertextSpaceAttr(ParametrizedAttribute):
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
         """Parse ring, encryption_type, and size parameters declaratively."""
 
-        from .polynomial import RingAttr
+        from orion_heir.dialects.polynomial import RingAttr
 
         field_specs = create_field_specs(
             ring=(FieldType.FLEXIBLE_ATTRIBUTE, True, RingAttr),
@@ -265,17 +262,16 @@ class ApplicationDataAttr(ParametrizedAttribute):
 
 
 @irdl_attr_definition
-class NewLWEPlaintextType(ParametrizedAttribute, TypeAttribute):
+class LWEPlaintextType(ParametrizedAttribute, TypeAttribute):
     """
     A type representing LWE plaintexts.
 
-    Syntax: !lwe.new_lwe_plaintext<application_data = app_data, plaintext_space = space>
-    Example: !lwe.new_lwe_plaintext<application_data = <message_type = i3>, plaintext_space = #plaintext_space>
+    Syntax: !lwe.lwe_plaintext<plaintext_space = space>
+    Example: !lwe.lwe_plaintext<plaintext_space = #plaintext_space>
     """
 
-    name = "lwe.new_lwe_plaintext"
+    name = "lwe.lwe_plaintext"
 
-    application_data: ParameterDef[ApplicationDataAttr]
     plaintext_space: ParameterDef[PlaintextSpaceAttr]
 
     @classmethod
@@ -283,13 +279,6 @@ class NewLWEPlaintextType(ParametrizedAttribute, TypeAttribute):
         """Parse plaintext type parameters declaratively."""
 
         field_specs = {
-            "application_data": FieldSpec(
-                "application_data",
-                FieldType.NESTED_PARAMETERS,
-                required=True,
-                nested_parser=ApplicationDataAttr.parse_parameters,
-                attribute_class=ApplicationDataAttr,
-            ),
             "plaintext_space": FieldSpec(
                 "plaintext_space",
                 FieldType.NESTED_PARAMETERS,
@@ -302,26 +291,23 @@ class NewLWEPlaintextType(ParametrizedAttribute, TypeAttribute):
         return parse_parameters_declarative(parser, field_specs)
 
     def print_parameters(self, printer: Printer) -> None:
-        """Print application_data and plaintext_space parameters."""
-        printer.print_string("<application_data = ")
-        self.application_data.print_parameters(printer)
-        printer.print_string(", plaintext_space = ")
+        """Print plaintext_space parameter."""
+        printer.print_string("<plaintext_space = ")
         self.plaintext_space.print_parameters(printer)
         printer.print_string(">")
 
 
 @irdl_attr_definition
-class NewLWECiphertextType(ParametrizedAttribute, TypeAttribute):
+class LWECiphertextType(ParametrizedAttribute, TypeAttribute):
     """
     A type representing LWE ciphertexts.
 
-    Syntax: !lwe.new_lwe_ciphertext<application_data = app_data, plaintext_space = space,
-                                   ciphertext_space = c_space, key = key_attr, modulus_chain = chain>
+    Syntax: !lwe.lwe_ciphertext<plaintext_space = space,
+                                ciphertext_space = c_space, key = key_attr, modulus_chain = chain>
     """
 
-    name = "lwe.new_lwe_ciphertext"
+    name = "lwe.lwe_ciphertext"
 
-    application_data: ParameterDef[ApplicationDataAttr]
     plaintext_space: ParameterDef[PlaintextSpaceAttr]
     ciphertext_space: ParameterDef[CiphertextSpaceAttr]
     key: ParameterDef[KeyAttr]
@@ -332,13 +318,6 @@ class NewLWECiphertextType(ParametrizedAttribute, TypeAttribute):
         """Parse all ciphertext type parameters declaratively."""
 
         field_specs = {
-            "application_data": FieldSpec(
-                "application_data",
-                FieldType.NESTED_PARAMETERS,
-                required=True,
-                nested_parser=ApplicationDataAttr.parse_parameters,
-                attribute_class=ApplicationDataAttr,
-            ),
             "plaintext_space": FieldSpec(
                 "plaintext_space",
                 FieldType.NESTED_PARAMETERS,
@@ -365,7 +344,7 @@ class NewLWECiphertextType(ParametrizedAttribute, TypeAttribute):
         result = parse_parameters_declarative(parser, field_specs)
 
         # If modulus_chain wasn't provided, create a default one
-        if len(result) == 4:  # No modulus_chain
+        if len(result) == 3:  # No modulus_chain
             empty_elements = ArrayAttr([])
             default_current = IntegerAttr.from_int_and_width(0, 64)
             default_modulus_chain = ModulusChainAttr([empty_elements, default_current])
@@ -375,9 +354,7 @@ class NewLWECiphertextType(ParametrizedAttribute, TypeAttribute):
 
     def print_parameters(self, printer: Printer) -> None:
         """Print all ciphertext type parameters."""
-        printer.print_string("<application_data = ")
-        self.application_data.print_parameters(printer)
-        printer.print_string(", plaintext_space = ")
+        printer.print_string("<plaintext_space = ")
         self.plaintext_space.print_parameters(printer)
         printer.print_string(", ciphertext_space = ")
         self.ciphertext_space.print_parameters(printer)
@@ -408,7 +385,7 @@ class RLWEEncodeOp(IRDLOperation):
 
     # Operands - allow tensors, integers, or floats
     input = operand_def(TensorType)
-    output = result_def(NewLWEPlaintextType)
+    output = result_def(LWEPlaintextType)
 
     # Attributes
     encoding = attr_def(InverseCanonicalEncodingAttr)
@@ -433,7 +410,7 @@ LWE = Dialect(
         PlaintextSpaceAttr,
         CiphertextSpaceAttr,
         ApplicationDataAttr,
-        NewLWEPlaintextType,
-        NewLWECiphertextType,
+        LWEPlaintextType,
+        LWECiphertextType,
     ],
 )

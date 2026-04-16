@@ -7,15 +7,15 @@ different frontends (Orion, OpenFHE, SEAL, etc.).
 
 from typing import Dict, List, Any
 
-from xdsl.ir import SSAValue, Block, Region
+from xdsl.ir import Region
 from xdsl.dialects.builtin import ArrayAttr, DictionaryAttr, ModuleOp, FunctionType
 from xdsl.dialects.func import FuncOp, ReturnOp
 from xdsl.context import Context
 
-from .types import FHEOperation, SchemeParameters, FrontendInterface
-from .operation_registry import OperationRegistry
-from .type_builder import TypeBuilder
-from ..frontends.orion.orion_frontend import fix_encode_operations
+from orion_heir.core.types import FHEOperation, SchemeParameters, FrontendInterface
+from orion_heir.core.operation_registry import OperationRegistry
+from orion_heir.core.type_builder import TypeBuilder
+from orion_heir.frontends.orion.orion_frontend import fix_encode_operations
 
 
 class GenericTranslator:
@@ -35,14 +35,15 @@ class GenericTranslator:
     def _register_dialects(self):
         """Register all HEIR dialects with the context."""
         # Import dialects here to avoid circular imports
-        from ..dialects.ckks import CKKS
-        from ..dialects.lwe import LWE
-        from ..dialects.polynomial import Polynomial
-        from ..dialects.mod_arith import ModArith
-        from ..dialects.rns import RNS
-        from ..dialects.mgmt import MGMT
+        from orion_heir.dialects.ckks import CKKS
+        from orion_heir.dialects.orion import Orion
+        from orion_heir.dialects.lwe import LWE
+        from orion_heir.dialects.polynomial import Polynomial
+        from orion_heir.dialects.mod_arith import ModArith
+        from orion_heir.dialects.rns import RNS
+        from orion_heir.dialects.mgmt import MGMT
 
-        dialects = [CKKS, LWE, Polynomial, ModArith, RNS, MGMT]
+        dialects = [CKKS, LWE, Polynomial, ModArith, RNS, MGMT, Orion]
         for dialect in dialects:
             self.context.load_dialect(dialect)
 

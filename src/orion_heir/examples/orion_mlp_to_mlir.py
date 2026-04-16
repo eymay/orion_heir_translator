@@ -16,7 +16,7 @@ from io import StringIO
 
 # Import our translator
 from orion_heir import GenericTranslator, FHEOperation, OrionFrontend
-from orion_heir.frontends.orion.scheme_params import OrionSchemeParameters, OrionNotAvailableError
+from orion_heir.frontends.orion.scheme_params import OrionSchemeParameters
 
 
 class RealisticMLP(nn.Module):
@@ -300,7 +300,6 @@ def create_production_fhe_scheme():
         slots=4096,  # Number of SIMD slots
         ring_degree=8192,  # Polynomial ring degree
         backend="lattigo",  # Orion backend
-        require_orion=True,  # Use actual Orion primes
     )
 
 
@@ -381,19 +380,9 @@ def run_orion_mlp_demo():
         print(f"✅ Modulus chain levels: {len(scheme_params.ciphertext_modulus_chain)}")
         print(f"✅ Scale: 2^{scheme_params.log_scale}")
 
-    except OrionNotAvailableError as e:
+    except Exception as e:
         print(f"❌ {e}")
-        print("🔄 Falling back to test parameters...")
-        scheme_params = OrionSchemeParameters(
-            logN=13,
-            logQ=[60, 50, 45, 45, 50],
-            logP=[60],
-            logScale=45,
-            slots=4096,
-            ring_degree=8192,
-            backend="lattigo",
-            require_orion=False,
-        )
+        raise
 
     # Step 6: Translate to HEIR MLIR
     print("\n6️⃣ Translating to HEIR MLIR")
