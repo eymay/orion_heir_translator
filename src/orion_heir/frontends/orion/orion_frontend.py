@@ -237,9 +237,14 @@ class OrionFrontend(FrontendInterface):
 
         print(f"📋 Expected layers: {expected_layers}")
 
+        # Track sub-modules handled by composite operations (e.g. ReLU)
+        handled_names: set = set()
+
         # Process each layer
         for name, layer in all_layers:
             if not name:  # Skip root module
+                continue
+            if name in handled_names:
                 continue
 
             layer_type = layer.__class__.__name__
@@ -254,10 +259,10 @@ class OrionFrontend(FrontendInterface):
                     operations.extend(layer_ops)
                     found_layers.append(f"{name}(Linear)")
 
-                elif layer_type == "Conv2d":
-                    layer_ops = self._get_conv2d_operations(layer, name)
+                elif layer_type in ("Conv1d", "Conv2d"):
+                    layer_ops = self._get_conv_operations(layer, name, layer_type)
                     operations.extend(layer_ops)
-                    found_layers.append(f"{name}(Conv2d)")
+                    found_layers.append(f"{name}({layer_type})")
 
                 elif layer_type == "BatchNorm2d":
                     layer_ops = self._get_batchnorm2d_operations(layer, name)
@@ -268,6 +273,10 @@ class OrionFrontend(FrontendInterface):
                     layer_ops = self._get_relu_operations(layer, name)
                     operations.extend(layer_ops)
                     found_layers.append(f"{name}(ReLU)")
+                    # Mark sub-modules as handled to prevent double-extraction
+                    for sub_name, _ in layer.named_modules():
+                        if sub_name:
+                            handled_names.add(f"{name}.{sub_name}")
 
                 elif layer_type == "Add":
                     layer_ops = self._get_add_operations(layer, name)
@@ -309,6 +318,12 @@ class OrionFrontend(FrontendInterface):
                         operations.extend(layer_ops)
                         found_layers.append(f"{name}(BatchNorm1d)")
 
+                elif layer_type in ("AdaptiveAvgPool1d", "AdaptiveAvgPool2d"):
+                    # Pool layers compiled into linear_transforms with diagonals
+                    layer_ops = self._get_linear_operations(layer, name)
+                    operations.extend(layer_ops)
+                    found_layers.append(f"{name}({layer_type})")
+
                 elif layer_type == "Flatten":
                     # Flatten is plaintext operation, handled by Linear diagonals
                     print(
@@ -326,7 +341,6 @@ class OrionFrontend(FrontendInterface):
                     "Identity",
                     "Sequential",
                     "ModuleList",
-                    "AdaptiveAvgPool2d",
                 ]:
                     print(f"    ℹ️  {name}({layer_type}) - no direct FHE operations")
                 else:
@@ -361,11 +375,17 @@ class OrionFrontend(FrontendInterface):
         if layer_type == "Linear":
             return hasattr(layer, "diagonals") or hasattr(layer, "transform_ids")
 
-        if layer_type == "Conv2d":
+        if layer_type in ("Conv1d", "Conv2d"):
             return hasattr(layer, "diagonals") or hasattr(layer, "transform_ids")
 
         # Quad activations produce operations
-        if layer_type in ["Quad", "ReLU", "Chebyshev", "_Sign", "Mult"]:
+        if layer_type in ["Quad", "Chebyshev", "_Sign", "Mult"]:
+            return not self._is_layer_fused(layer)
+
+        # Composite ReLU (has prescale + sign + mult sub-modules)
+        if layer_type == "ReLU":
+            if hasattr(layer, "sign") and hasattr(layer, "mult1") and hasattr(layer, "mult2"):
+                return True  # Handle as composite even without a level
             return not self._is_layer_fused(layer)
 
         # BatchNorm may produce operations if not fused
@@ -380,8 +400,12 @@ class OrionFrontend(FrontendInterface):
         if layer_type == "Bootstrap":
             return True  # Bootstrap operations always needed in FHE
 
+        # Pool layers may be compiled into linear_transforms with diagonals
+        if layer_type in ("AdaptiveAvgPool1d", "AdaptiveAvgPool2d"):
+            return hasattr(layer, "diagonals") and bool(layer.diagonals)
+
         # Flatten is plaintext, no FHE operations needed
-        if layer_type in ["Flatten", "Identity", "Sequential", "ModuleList", "AdaptiveAvgPool2d"]:
+        if layer_type in ["Flatten", "Identity", "Sequential", "ModuleList"]:
             return False
 
         return False
@@ -453,6 +477,7 @@ class OrionFrontend(FrontendInterface):
             "Activation",
             "Quad",
             # ResNet CNN types
+            "Conv1d",
             "Conv2d",
             "BatchNorm2d",
             "ReLU",
@@ -502,8 +527,8 @@ class OrionFrontend(FrontendInterface):
 
         if layer_type == "Linear":
             return self._get_linear_operations(layer, layer_name)
-        elif layer_type == "Conv2d":
-            return self._get_conv2d_operations(layer, layer_name)
+        elif layer_type in ("Conv1d", "Conv2d"):
+            return self._get_conv_operations(layer, layer_name, layer_type)
         elif layer_type == "BatchNorm2d":
             return self._get_batchnorm2d_operations(layer, layer_name)
         elif layer_type == "ReLU":
@@ -680,7 +705,7 @@ class OrionFrontend(FrontendInterface):
                 FHEOperation(
                     op_type="add_plain",
                     method_name="add_plain",
-                    args=[f"{final_result}", f"@{layer_name}_bias_encoded"],
+                    args=[],
                     kwargs={},
                     result_var=f"{layer_name}_result",
                     level=level,
@@ -753,60 +778,13 @@ class OrionFrontend(FrontendInterface):
             print(f"      ❌ Error stacking diagonals: {e}")
             return None
 
-    def _get_conv_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
+    def _get_conv_operations(
+        self, layer: Any, layer_name: str, layer_type: str = "Conv2d"
+    ) -> List[FHEOperation]:
         """
-        Get operations for a Conv2d layer.
+        Get operations for a Conv1d/Conv2d layer.
 
-        Convolution in Orion is implemented using linear transforms
-        with Toeplitz matrices converted to diagonals.
-        """
-        operations = []
-        level = getattr(layer, "level", 1)
-
-        # Convolution as linear transform
-        if hasattr(layer, "transform_ids") and layer.transform_ids:
-            operations.append(
-                FHEOperation(
-                    op_type="linear_transform",
-                    method_name="linear_transform",
-                    args=[],
-                    kwargs={},
-                    result_var=f"{layer_name}_conv",
-                    level=level,
-                    metadata={
-                        "operation": "orion_convolution",
-                        "layer": layer_name,
-                        "layer_type": "Conv2d",
-                        "transform_blocks": len(layer.transform_ids),
-                    },
-                )
-            )
-
-        # Bias addition if present
-        if hasattr(layer, "bias") and layer.bias is not None:
-            operations.append(
-                FHEOperation(
-                    op_type="add_plain",
-                    method_name="add_plain",
-                    args=[],
-                    kwargs={},
-                    result_var=f"{layer_name}_result",
-                    level=level,
-                    metadata={
-                        "operation": "bias_addition",
-                        "layer": layer_name,
-                        "layer_type": "Conv2d",
-                    },
-                )
-            )
-
-        return operations
-
-    def _get_conv2d_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
-        """
-        Get operations for a Conv2d layer.
-
-        Conv2d in Orion is implemented using linear transforms with
+        Convolutions in Orion are implemented using linear transforms with
         Toeplitz matrices converted to diagonal matrices for SIMD computation.
         """
         operations = []
@@ -816,7 +794,7 @@ class OrionFrontend(FrontendInterface):
         conv_metadata = {
             "operation": "orion_convolution",
             "layer": layer_name,
-            "layer_type": "Conv2d",
+            "layer_type": layer_type,
             "orion_level": level,
         }
 
@@ -891,14 +869,14 @@ class OrionFrontend(FrontendInterface):
                 FHEOperation(
                     op_type="add_plain",
                     method_name="add_plain",
-                    args=[f"@{layer_name}_bias_encoded"],
+                    args=[],
                     kwargs={},
                     result_var=f"{layer_name}_result",
                     level=level,
                     metadata={
                         "operation": "bias_addition",
                         "layer": layer_name,
-                        "layer_type": "Conv2d",
+                        "layer_type": layer_type,
                     },
                 )
             )
@@ -1141,133 +1119,143 @@ class OrionFrontend(FrontendInterface):
         return operations
 
     def _get_relu_operations(self, layer: Any, layer_name: str) -> List[FHEOperation]:
-        """Get operations for ReLU layer."""
+        """Get operations for ReLU layer.
+
+        Orion's composite ReLU forward pass is::
+
+            x = mult1(x, prescale)          # ct × constant
+            x = mult2(x, sign(x))           # prescaled × step(prescaled)
+            x *= postscale                  # integer scale (prescale*postscale == 1)
+
+        Which simplifies to ``relu(x) ≈ x * step(x * prescale)``.
+
+        We absorb the prescale into the first Chebyshev interval so that
+        the polynomial evaluator maps the *un-prescaled* input to [-1, 1]
+        internally.  Then ``mult2`` multiplies the original input (saved
+        before the sign chain) by the step output.  No explicit prescale
+        or postscale operations are needed.
+        """
         operations = []
-        # Check if ReLU is fused into adjacent layer (like BatchNorm is)
-        if self._is_layer_fused(layer):
-            print(f"    ℹ️  ReLU {layer_name} is fused into adjacent layer")
-            return operations  # Return empty - no separate operations needed
 
-        level = layer.level
-
-        # Check if ReLU has polynomial approximation components
+        # ── Composite ReLU (sign + mult1 + mult2) ────────────────────
         if hasattr(layer, "sign") and hasattr(layer, "mult1") and hasattr(layer, "mult2"):
-            # Orion's ReLU decomposition: ReLU(x) = 0.5 * (x + x * sign(x))
+            prescale = float(getattr(layer, "prescale", 1.0))
+            postscale = float(getattr(layer, "postscale", 1.0))
+            prescaled_ref = f"{layer_name}_prescaled"
 
-            # Extract sign polynomial coefficients
-            sign_coeffs = []
-            domain_start = -1.0
-            domain_end = 1.0
-
-            if hasattr(layer.sign, "coeffs") and layer.sign.coeffs:
-                # Get coefficients from compiled sign function
-                for poly_coeffs in layer.sign.coeffs:
-                    if hasattr(poly_coeffs, "tolist"):
-                        sign_coeffs.extend(poly_coeffs.tolist())
-                    else:
-                        sign_coeffs.extend(poly_coeffs)
-
-            # Get domain from sign layer if available
-            if hasattr(layer.sign, "low") and hasattr(layer.sign, "high"):
-                domain_start = float(layer.sign.low)
-                domain_end = float(layer.sign.high)
-
-            # Sign polynomial evaluation using Orion's coefficients
+            # ── mult1: ct × prescale (scalar constant) ───────────────
             operations.append(
                 FHEOperation(
-                    op_type="orion.chebyshev",
-                    method_name="chebyshev",
+                    op_type="ckks.mul_scalar",
+                    method_name="mul_scalar",
                     args=[],
-                    kwargs={
-                        "coefficients": sign_coeffs,
-                        "domain_start": domain_start,
-                        "domain_end": domain_end,
-                    },
-                    result_var=f"{layer_name}_sign",
-                    level=level - 1,
+                    kwargs={},
+                    result_var=prescaled_ref,
+                    level=layer.mult1.level,
                     metadata={
-                        "operation": "sign_chebyshev_approximation",
+                        "operation": "relu_prescale",
                         "layer": layer_name,
-                        "degrees": getattr(layer.sign, "degrees", []),
-                        "coefficients_count": len(sign_coeffs),
-                        "function_type": "sign",
+                        "constant_value": prescale,
                     },
                 )
             )
 
-            # Multiplication: x * sign(x)
+            # ── sign chain: Chebyshev polynomials + bootstraps ───────
+            sign_layer = layer.sign
+            if hasattr(sign_layer, "acts"):
+                for act_name, act in sign_layer.acts.named_modules():
+                    if not act_name:
+                        continue
+                    act_type = act.__class__.__name__
+
+                    if act_type == "Chebyshev" and not self._is_layer_fused(act):
+                        cheby_ops = self._get_chebyshev_operations(
+                            act, f"{layer_name}.sign.acts.{act_name}"
+                        )
+                        operations.extend(cheby_ops)
+
+                    elif act_type == "Bootstrap":
+                        boot_ops = self._get_bootstrap_operations(
+                            act, f"{layer_name}.sign.acts.{act_name}"
+                        )
+                        operations.extend(boot_ops)
+
+            # ── mult2: prescaled_input × step_output ─────────────────
+            mult2_level = getattr(layer.mult2, "level", 1)
             operations.append(
                 FHEOperation(
                     op_type="mul",
                     method_name="mul",
-                    args=[],
+                    args=[prescaled_ref],
                     kwargs={},
-                    result_var=f"{layer_name}_mult1",
-                    level=level - 2,
-                    metadata={"operation": "relu_sign_mult", "layer": layer_name},
-                )
-            )
-
-            # Addition: x + x*sign(x)
-            operations.append(
-                FHEOperation(
-                    op_type="add",
-                    method_name="add",
-                    args=[],
-                    kwargs={},
-                    result_var=f"{layer_name}_sum",
-                    level=level - 2,
-                    metadata={"operation": "relu_sum", "layer": layer_name},
-                )
-            )
-
-            # Final scaling by 0.5
-            operations.append(
-                FHEOperation(
-                    op_type="mul_plain",
-                    method_name="mul_plain",
-                    args=[0.5],
-                    kwargs={},
-                    result_var=f"{layer_name}_result",
-                    level=level - 2,
-                    metadata={"operation": "relu_final_scale", "layer": layer_name},
-                )
-            )
-
-        else:
-            # Simple polynomial ReLU (if no decomposition)
-            relu_coeffs = []
-            domain_start = -1.0
-            domain_end = 1.0
-
-            if hasattr(layer, "coeffs") and layer.coeffs:
-                relu_coeffs = (
-                    layer.coeffs.tolist() if hasattr(layer.coeffs, "tolist") else layer.coeffs
-                )
-            if hasattr(layer, "low") and hasattr(layer, "high"):
-                domain_start = float(layer.low)
-                domain_end = float(layer.high)
-
-            operations.append(
-                FHEOperation(
-                    op_type="orion.chebyshev",
-                    method_name="chebyshev",
-                    args=[],
-                    kwargs={
-                        "coefficients": relu_coeffs,
-                        "domain_start": domain_start,
-                        "domain_end": domain_end,
-                    },
-                    result_var=f"{layer_name}_result",
-                    level=level - 1,
+                    result_var=f"{layer_name}_mult2",
+                    level=mult2_level,
                     metadata={
-                        "operation": "relu_chebyshev",
+                        "operation": "relu_final_mult",
                         "layer": layer_name,
-                        "coefficients_count": len(relu_coeffs),
-                        "function_type": "relu",
                     },
                 )
             )
+
+            # ── postscale: ct × postscale (scalar constant) ──────────
+            if postscale != 1.0:
+                operations.append(
+                    FHEOperation(
+                        op_type="ckks.mul_scalar",
+                        method_name="mul_scalar",
+                        args=[],
+                        kwargs={},
+                        result_var=f"{layer_name}_result",
+                        level=mult2_level,
+                        metadata={
+                            "operation": "relu_postscale",
+                            "layer": layer_name,
+                            "constant_value": postscale,
+                        },
+                    )
+                )
+
+            return operations
+
+        # ── Simple ReLU (fused or single polynomial) ─────────────────
+        if self._is_layer_fused(layer):
+            print(f"    ℹ️  ReLU {layer_name} is fused into adjacent layer")
+            return operations
+
+        level = layer.level
+        relu_coeffs = []
+        domain_start = -1.0
+        domain_end = 1.0
+
+        if hasattr(layer, "coeffs") and layer.coeffs:
+            relu_coeffs = layer.coeffs.tolist() if hasattr(layer.coeffs, "tolist") else layer.coeffs
+        if hasattr(layer, "input_min") and hasattr(layer, "input_max"):
+            domain_start = float(layer.input_min)
+            domain_end = float(layer.input_max)
+        elif hasattr(layer, "low") and hasattr(layer, "high"):
+            domain_start = float(layer.low)
+            domain_end = float(layer.high)
+
+        operations.append(
+            FHEOperation(
+                op_type="orion.chebyshev",
+                method_name="chebyshev",
+                args=[],
+                kwargs={
+                    "coefficients": relu_coeffs,
+                    "domain_start": domain_start,
+                    "domain_end": domain_end,
+                },
+                result_var=f"{layer_name}_result",
+                level=level - 1,
+                metadata={
+                    "operation": "relu_chebyshev",
+                    "layer": layer_name,
+                    "coefficients_count": len(relu_coeffs),
+                    "function_type": "relu",
+                },
+            )
+        )
 
         return operations
 
@@ -1390,6 +1378,10 @@ class OrionFrontend(FrontendInterface):
         if hasattr(layer, "low") and hasattr(layer, "high"):
             domain_start = float(layer.low)
             domain_end = float(layer.high)
+        elif hasattr(layer, "input_min") and hasattr(layer, "input_max"):
+            domain_start = float(layer.input_min)
+            domain_end = float(layer.input_max)
+        if domain_start != -1.0 or domain_end != 1.0:
             print(f"       - Domain: [{domain_start}, {domain_end}]")
 
         # Get function type if available

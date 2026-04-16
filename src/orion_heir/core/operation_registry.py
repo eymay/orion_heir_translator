@@ -157,14 +157,15 @@ class CKKSMulHandler(BaseOperationHandler):
         """Handle CKKS multiplication with relinearization AND rescaling."""
         from xdsl.dialects.builtin import DenseArrayBase
 
-        # Get the other operand
-        if operation.args and len(operation.args) > 0:
-            other_operand = constants.get(f"arg_{hash(operation.args[0])}", operation.args[0])
+        # Get the other operand — may be a named reference to a saved value
+        if operation.args:
+            ref = operation.args[0]
+            if isinstance(ref, str) and ref in constants:
+                other_operand = constants[ref]
+            else:
+                other_operand = current_value
         else:
             other_operand = current_value
-
-        # Store original scaling factor
-        # original_scale = type_builder.get_scaling_factor(current_value.type)
 
         # 1. Create multiplication operation (doubles scaling factor)
         result_type = type_builder.infer_result_type(
@@ -191,7 +192,6 @@ class CKKSMulHandler(BaseOperationHandler):
         )
         block.add_op(relin_op)
 
-        # return relin_op.results[0]
         # 3. Add rescale operation to reduce scaling factor back to original
         original_scale = type_builder.get_scaling_factor(current_value.type)
         rescaled_type = type_builder.create_rescaled_type(relin_op.results[0].type, original_scale)
@@ -290,7 +290,52 @@ class CKKSPlaintextHandler(BaseOperationHandler):
 
             return rescale_op.results[0]
 
-        return op_instance.results[0]
+        result = op_instance.results[0]
+
+        # For bias_addition: also apply the corresponding bias chunk to each pipeline block.
+        # Pipeline blocks are separate row-block ciphertext IDs from the previous
+        # multi-row-block linear transform; each needs its own bias chunk argument.
+        if operation.metadata["operation"] == "bias_addition":
+            pipeline_keys = sorted(k for k in constants if k.startswith("__pipeline_block_"))
+            for chunk_idx, key in enumerate(pipeline_keys, start=1):
+                ct_pipeline = constants[key]
+                ct_pipeline_ty = ct_pipeline.type
+
+                # Add a new function argument for this bias chunk
+                new_arg_index = len(func_op.args)
+                new_arg_attrs = func_op.arg_attrs.data + (
+                    DictionaryAttr(
+                        {
+                            "orion.layer_name": StringAttr(layer_name),
+                            "orion.layer_role": StringAttr("bias"),
+                            "orion.level": IntegerAttr.from_int_and_width(operation.level, 64),
+                        }
+                    ),
+                )
+                cleartext_chunk = block.insert_arg(arg_type=new_argument_type, index=new_arg_index)
+                func_op.properties["arg_attrs"] = ArrayAttr(new_arg_attrs)
+                func_op.update_function_type()
+
+                # Encode and add to the pipeline block
+                plaintext_type_chunk = LWEPlaintextType([ct_pipeline_ty.plaintext_space])
+                encode_chunk = RLWEEncodeOp(
+                    operands=[cleartext_chunk],
+                    result_types=[plaintext_type_chunk],
+                    attributes={
+                        "encoding": ct_pipeline_ty.plaintext_space.encoding,
+                        "ring": ct_pipeline_ty.plaintext_space.ring,
+                    },
+                )
+                block.add_op(encode_chunk)
+
+                add_chunk = AddPlainOp(
+                    operands=[ct_pipeline, encode_chunk.results[0]],
+                    result_types=[ct_pipeline.type],
+                )
+                block.add_op(add_chunk)
+                constants[key] = add_chunk.results[0]
+
+        return result
 
     def _get_plaintext_operand(
         self, operation: FHEOperation, constants: Dict[str, SSAValue]
@@ -351,7 +396,7 @@ class CKKSRotationHandler(BaseOperationHandler):
             return operation.kwargs["offset"]
 
         # Check args
-        if operation.args and len(operation.args) > 0:
+        if operation.args:
             if isinstance(operation.args[0], int):
                 return operation.args[0]
 
@@ -438,6 +483,8 @@ class OperationRegistry:
 
         self.handlers["orion.chebyshev"] = ChebyshevHandler()
         self.handlers["bootstrap"] = CKKSBootstrapHandler()
+        self.handlers["save_ref"] = SaveRefHandler()
+        self.handlers["ckks.mul_scalar"] = CKKSMulScalarHandler()
 
     def register_operation(self, op_type: str, handler: OperationHandler):
         """Register a custom operation handler."""
@@ -474,6 +521,12 @@ class OperationRegistry:
 class LinearTransformHandler(BaseOperationHandler):
     """Handler for CKKS linear transform operations with block-based diagonal processing."""
 
+    def __init__(self):
+        # Set when _handle_blocked_linear_transform has already rescaled extra row blocks
+        # and stored them in constants.  handle() uses this flag to know whether to
+        # apply the outer rescale or not (it still rescales the first/only block).
+        self._pipeline_blocks_stored = False
+
     def handle(
         self,
         operation: FHEOperation,
@@ -483,24 +536,39 @@ class LinearTransformHandler(BaseOperationHandler):
         type_builder: Any,
     ) -> SSAValue:
         """Handle CKKS linear transform with block-based diagonal processing."""
+        self._pipeline_blocks_stored = False
+
         # Extract Orion metadata
         orion_metadata = self._extract_orion_metadata(operation, type_builder)
 
         # Get the layer from operation args to extract diagonal blocks
         layer = None
-        if operation.args and len(operation.args) > 0:
+        if operation.args:
             layer = operation.args[0]
 
         # Create multiple linear transform operations - one per block
         if layer and hasattr(layer, "diagonals") and layer.diagonals:
-            return self._handle_blocked_linear_transform(
+            lt_result = self._handle_blocked_linear_transform(
                 operation, current_value, block, constants, type_builder, layer, orion_metadata
             )
         else:
             # Fallback for single block or no diagonal data
-            return self._handle_single_linear_transform(
+            lt_result = self._handle_single_linear_transform(
                 operation, current_value, block, constants, type_builder, orion_metadata
             )
+
+        # Linear transform doubles the scale (like mul_plain), so rescale after.
+        # This always rescales the main (first) result; extra pipeline blocks are
+        # rescaled individually inside _handle_blocked_linear_transform.
+        original_scale = type_builder.get_scaling_factor(current_value.type)
+        rescaled_type = type_builder.create_rescaled_type(lt_result.type, original_scale)
+        rescale_op = RescaleOp(
+            operands=[lt_result],
+            result_types=[rescaled_type],
+            properties={"to_ring": type_builder.get_next_modulus_ring(lt_result.type)},
+        )
+        block.add_op(rescale_op)
+        return rescale_op.results[0]
 
     def _handle_blocked_linear_transform(
         self,
@@ -512,7 +580,12 @@ class LinearTransformHandler(BaseOperationHandler):
         layer: Any,
         orion_metadata: Dict,
     ) -> SSAValue:
-        """Handle linear transform with multiple blocks - create one operation per block."""
+        """Handle linear transform with multiple blocks - create one operation per block.
+
+        Implements Orion's pipelined BSGS structure:
+        - Multiple row blocks → separate output IDs (kept in constants as pipeline blocks)
+        - Multiple col blocks → each uses a different input ID from previous pipeline blocks
+        """
 
         diagonals = layer.diagonals
         # transform_ids = getattr(layer, 'transform_ids', {})
@@ -530,9 +603,11 @@ class LinearTransformHandler(BaseOperationHandler):
         num_block_rows = max_row + 1
         num_block_cols = max_col + 1
 
-        # Create input tensor list for block columns
+        # Create input tensor list for block columns.
+        # For column blocks (num_block_cols > 1), retrieve the pipeline block SSAValues
+        # that were stored by the previous layer's row-block evaluation.
         input_tensors = self._create_input_tensor_list(
-            current_value, num_block_cols, block, type_builder
+            current_value, num_block_cols, block, type_builder, constants
         )
 
         # Process each block row
@@ -555,7 +630,7 @@ class LinearTransformHandler(BaseOperationHandler):
                         orion_metadata,
                     )
 
-                    # Accumulate results across columns
+                    # Accumulate results across columns (matching Orion's per-row accumulation)
                     if row_result is None:
                         row_result = block_result
                     else:
@@ -566,11 +641,34 @@ class LinearTransformHandler(BaseOperationHandler):
             if row_result is not None:
                 block_row_results.append(row_result)
 
-        # Combine all block row results
+        # Clear consumed pipeline blocks (they were used as column inputs above)
+        if num_block_cols > 1:
+            for k in [k for k in constants if k.startswith("__pipeline_block_")]:
+                del constants[k]
+
+        # For a single row result: return as-is (outer handle() will rescale).
         if len(block_row_results) == 1:
             return block_row_results[0]
-        else:
-            return self._combine_block_results(block_row_results, block, type_builder)
+
+        # Multiple row results: implement pipelined BSGS.
+        # Orion keeps row-block outputs as SEPARATE ciphertext IDs so the next
+        # layer's column blocks can use them individually.  We rescale each
+        # extra row result and store it in constants, then return the first
+        # (un-rescaled) result so handle() rescales it normally.
+        original_scale = type_builder.get_scaling_factor(current_value.type)
+        for i, row_result in enumerate(block_row_results[1:], start=1):
+            rescaled_type = type_builder.create_rescaled_type(row_result.type, original_scale)
+            rescale_op = RescaleOp(
+                operands=[row_result],
+                result_types=[rescaled_type],
+                properties={"to_ring": type_builder.get_next_modulus_ring(row_result.type)},
+            )
+            block.add_op(rescale_op)
+            constants[f"__pipeline_block_{i}"] = rescale_op.results[0]
+
+        self._pipeline_blocks_stored = True
+        # Return the first row result (un-rescaled); handle() will rescale it.
+        return block_row_results[0]
 
     def _create_block_linear_transform(
         self,
@@ -655,8 +753,10 @@ class LinearTransformHandler(BaseOperationHandler):
         func_op.update_function_type()
 
         attributes = self._create_block_attributes(block_key, diagonal_indices, orion_metadata)
-        result_type = type_builder.infer_plaintext_result_type(
-            "mul_plain", input_tensor.type, inserted_diagonals_block_arg.type
+        # Linear transform multiplies by encoded diagonals, doubling the scale
+        original_scale = type_builder.get_scaling_factor(input_tensor.type)
+        result_type = type_builder.create_ciphertext_type_with_updated_scale(
+            input_tensor.type, original_scale * 2
         )
         linear_transform_op = LinearTransformOp(
             operands=[input_tensor, inserted_diagonals_block_arg],
@@ -668,23 +768,32 @@ class LinearTransformHandler(BaseOperationHandler):
         return linear_transform_op.results[0]
 
     def _create_input_tensor_list(
-        self, current_value: SSAValue, num_block_cols: int, block: Block, type_builder: Any
+        self,
+        current_value: SSAValue,
+        num_block_cols: int,
+        block: Block,
+        type_builder: Any,
+        constants: Dict[str, SSAValue] = None,
     ) -> List[SSAValue]:
-        """Create list of input tensors for block columns."""
+        """Create list of input tensors for block columns.
 
+        For layers with multiple column blocks (pipelined BSGS), each column block
+        should receive the separately-activated output of the corresponding row block
+        from the previous layer.  These are stored in constants as __pipeline_block_N.
+        """
         if num_block_cols == 1:
             return [current_value]
 
-        # For multiple columns, we need to split/replicate the input
-        # This is a simplified version - in practice, you might need more sophisticated splitting
-        input_tensors = []
+        # Check for pipeline blocks stored by the previous layer's row-block evaluation
+        if constants is not None:
+            pipeline_keys = sorted(k for k in constants if k.startswith("__pipeline_block_"))
+            # current_value is the rescaled output of row block 0;
+            # pipeline block N is the rescaled output of row block N.
+            if len(pipeline_keys) + 1 == num_block_cols:
+                return [current_value] + [constants[k] for k in pipeline_keys]
 
-        for col in range(num_block_cols):
-            # For now, use the same input for all columns
-            # TODO: Implement proper input splitting based on block structure
-            input_tensors.append(current_value)
-
-        return input_tensors
+        # Fallback: use the same input for all columns (may be incorrect for pipelined BSGS)
+        return [current_value] * num_block_cols
 
     def _add_ciphertexts(
         self, left: SSAValue, right: SSAValue, block: Block, type_builder: Any
@@ -831,32 +940,15 @@ class LinearTransformHandler(BaseOperationHandler):
 class CKKSQuadHandler(BaseOperationHandler):
     """Handler for CKKS quadratic activation operations."""
 
-    def handle(
-        self,
-        operation: FHEOperation,
-        current_value: SSAValue,
-        block: Block,
-        constants: Dict[str, SSAValue],
-        type_builder: Any,
-    ) -> SSAValue:
-        """Handle quadratic activation: x * x."""
-        # original_scale = type_builder.get_scaling_factor(current_value.type)
-        result_type = type_builder.infer_result_type_with_relinearization(
-            "mul", current_value.type, current_value.type
-        )
-
-        # Create self-multiplication operation
-        quad_op = MulOp(
-            operands=[current_value, current_value], result_types=[result_type]  # x * x
-        )
-
+    def _apply_quad(self, ct: SSAValue, block: Block, type_builder: Any) -> SSAValue:
+        """Apply x*x + relin + rescale to a single ciphertext SSAValue."""
+        result_type = type_builder.infer_result_type_with_relinearization("mul", ct.type, ct.type)
+        quad_op = MulOp(operands=[ct, ct], result_types=[result_type])
         block.add_op(quad_op)
 
-        # Add relinearization to reduce dimension back to 2
         relin_result_type = type_builder.create_relinearized_ciphertext_type(
             quad_op.results[0].type
         )
-
         relin_op = RelinearizeOp(
             operands=[quad_op.results[0]],
             result_types=[relin_result_type],
@@ -867,7 +959,7 @@ class CKKSQuadHandler(BaseOperationHandler):
         )
         block.add_op(relin_op)
 
-        original_scale = type_builder.get_scaling_factor(current_value.type)
+        original_scale = type_builder.get_scaling_factor(ct.type)
         rescaled_type = type_builder.create_rescaled_type(relin_op.results[0].type, original_scale)
         rescale_op = RescaleOp(
             operands=[relin_op.results[0]],
@@ -875,8 +967,25 @@ class CKKSQuadHandler(BaseOperationHandler):
             properties={"to_ring": type_builder.get_next_modulus_ring(relin_op.results[0].type)},
         )
         block.add_op(rescale_op)
-
         return rescale_op.results[0]
+
+    def handle(
+        self,
+        operation: FHEOperation,
+        current_value: SSAValue,
+        block: Block,
+        constants: Dict[str, SSAValue],
+        type_builder: Any,
+    ) -> SSAValue:
+        """Handle quadratic activation: x * x."""
+        result = self._apply_quad(current_value, block, type_builder)
+
+        # Also apply quad to each pipeline block (separate row-block ciphertext IDs
+        # from a prior multi-row-block linear transform).
+        for key in sorted(k for k in constants if k.startswith("__pipeline_block_")):
+            constants[key] = self._apply_quad(constants[key], block, type_builder)
+
+        return result
 
 
 class ChebyshevHandler(BaseOperationHandler):
@@ -930,6 +1039,48 @@ class ChebyshevHandler(BaseOperationHandler):
             constants[operation.result_var] = cheby_op.results[0]
 
         return cheby_op.results[0]
+
+
+class SaveRefHandler(BaseOperationHandler):
+    """Save current_value under a name without emitting any MLIR op."""
+
+    def handle(
+        self,
+        operation: FHEOperation,
+        current_value: SSAValue,
+        block: Block,
+        constants: Dict[str, SSAValue],
+        type_builder: Any,
+    ) -> SSAValue:
+        # The translator will store current_value in constants[result_var]
+        return current_value
+
+
+class CKKSMulScalarHandler(BaseOperationHandler):
+    """Emit ``ckks.mul_scalar`` — ciphertext × float constant."""
+
+    def handle(
+        self,
+        operation: FHEOperation,
+        current_value: SSAValue,
+        block: Block,
+        constants: Dict[str, SSAValue],
+        type_builder: Any,
+    ) -> SSAValue:
+        from orion_heir.dialects.ckks import MulScalarOp
+        from xdsl.dialects.builtin import FloatAttr, f64
+
+        scalar_val = operation.metadata.get("constant_value", 1.0)
+        result_type = current_value.type
+        op = MulScalarOp(
+            operands=[current_value],
+            result_types=[result_type],
+            properties={"scalar": FloatAttr(scalar_val, f64)},
+        )
+        block.add_op(op)
+        if operation.result_var:
+            constants[operation.result_var] = op.results[0]
+        return op.results[0]
 
 
 class CKKSBootstrapHandler(BaseOperationHandler):

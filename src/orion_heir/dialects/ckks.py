@@ -6,7 +6,7 @@ Provides CKKS homomorphic encryption operations and attributes
 from collections.abc import Sequence
 from typing import ClassVar
 
-from xdsl.dialects.builtin import IntegerAttr, ArrayAttr, DenseArrayBase
+from xdsl.dialects.builtin import IntegerAttr, FloatAttr, ArrayAttr, DenseArrayBase, f64
 from xdsl.ir import Attribute, Dialect, ParametrizedAttribute
 from xdsl.irdl import (
     BaseAttr,
@@ -429,6 +429,24 @@ class BootstrapOp(IRDLOperation):
     assembly_format = "$input attr-dict `:` type($input) `->` type($result)"
 
 
+@irdl_op_definition
+class MulScalarOp(IRDLOperation):
+    """Multiply a ciphertext by a scalar float constant.
+
+    Example: %out = ckks.mul_scalar %ct {scalar = 0.25 : f64} : !ct -> !ct
+    """
+
+    name = "ckks.mul_scalar"
+
+    input = operand_def(LWECiphertextType)
+    scalar = prop_def(FloatAttr)
+    result = result_def(LWECiphertextType)
+
+    traits = traits_def(Pure())
+    irdl_options = [ParsePropInAttrDict()]
+    assembly_format = "$input attr-dict `:` type($input) `->` type($result)"
+
+
 CKKS = Dialect(
     "ckks",
     [
@@ -439,6 +457,7 @@ CKKS = Dialect(
         AddPlainOp,
         SubPlainOp,
         MulPlainOp,
+        MulScalarOp,
         RelinearizeOp,
         RescaleOp,
         LevelReduce,

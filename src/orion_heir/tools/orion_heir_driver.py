@@ -265,6 +265,7 @@ def _validate_mlir(mlir_content: str) -> bool:
         # Try to parse with xDSL
         from xdsl.parser import Parser
         from xdsl.context import Context
+        from io import StringIO
 
         context = Context()
         # Load necessary dialects
@@ -280,7 +281,7 @@ def _validate_mlir(mlir_content: str) -> bool:
         for dialect in dialects:
             context.load_dialect(dialect)
 
-        parser = Parser(context, mlir_content)
+        parser = Parser(context, StringIO(mlir_content))
         parser.parse_module()
 
         print("✅ MLIR validation passed")
