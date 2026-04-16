@@ -11,6 +11,7 @@ from orion_heir.core.translator import GenericTranslator, create_translator
 from orion_heir.core.types import FHEOperation
 from orion_heir.frontends.orion.orion_frontend import OrionFrontend
 from orion_heir.frontends.orion.scheme_params import OrionSchemeParameters
+from orion_heir.frontends.orion.data_exporter import OrionDataExporter, generate_go_wrapper
 
 # Import CKKS interpreter components
 try:
@@ -31,6 +32,8 @@ __all__ = [
     "create_translator",
     "OrionFrontend",
     "OrionSchemeParameters",
+    "OrionDataExporter",
+    "generate_go_wrapper",
 ]
 
 # Add CKKS interpreter exports if available
