@@ -10,16 +10,16 @@ import yaml
 import torch
 from pathlib import Path
 
-from ...core.types import FHEOperation, FrontendInterface, SchemeParameters
-from .scheme_params import OrionSchemeParameters
+from orion_heir.core.types import FHEOperation, FrontendInterface, SchemeParameters
+from orion_heir.frontends.orion.scheme_params import OrionSchemeParameters
 
 
 def fix_encode_operations(module, type_builder):
     """
     Simplest approach: collect info, then rebuild operations that need fixing.
     """
-    from ...dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
-    from ...dialects.ckks import AddPlainOp, SubPlainOp, MulPlainOp
+    from orion_heir.dialects.lwe import RLWEEncodeOp, InverseCanonicalEncodingAttr
+    from orion_heir.dialects.ckks import AddPlainOp, SubPlainOp, MulPlainOp
     from xdsl.dialects.builtin import IntegerAttr, IntegerType
 
     print("🔧 Starting simple encode fix pass...")
@@ -154,7 +154,7 @@ class OrionFrontend(FrontendInterface):
                 "noise_growth": "minimal",
             },
             # Polynomial operations
-            "ckks.chebyshev": {
+            "orion.chebyshev": {
                 "description": "Evaluate Chebyshev polynomial with coefficients",
                 "operands": 1,
                 "level_change": -1,
@@ -1175,7 +1175,7 @@ class OrionFrontend(FrontendInterface):
             # Sign polynomial evaluation using Orion's coefficients
             operations.append(
                 FHEOperation(
-                    op_type="ckks.chebyshev",
+                    op_type="orion.chebyshev",
                     method_name="chebyshev",
                     args=[],
                     kwargs={
@@ -1250,7 +1250,7 @@ class OrionFrontend(FrontendInterface):
 
             operations.append(
                 FHEOperation(
-                    op_type="ckks.chebyshev",
+                    op_type="orion.chebyshev",
                     method_name="chebyshev",
                     args=[],
                     kwargs={
@@ -1404,7 +1404,7 @@ class OrionFrontend(FrontendInterface):
         if coeffs:
             operations.append(
                 FHEOperation(
-                    op_type="ckks.chebyshev",
+                    op_type="orion.chebyshev",
                     method_name="chebyshev",
                     args=[],
                     kwargs={
@@ -1423,7 +1423,7 @@ class OrionFrontend(FrontendInterface):
                     },
                 )
             )
-            print(f"       ✅ Created ckks.chebyshev operation with {len(coeffs)} coefficients")
+            print(f"       ✅ Created orion.chebyshev operation with {len(coeffs)} coefficients")
         else:
             print("       ⚠️ No coefficients available, skipping operation creation")
 
@@ -1458,7 +1458,7 @@ class OrionFrontend(FrontendInterface):
 
         operations.append(
             FHEOperation(
-                op_type="ckks.chebyshev",
+                op_type="orion.chebyshev",
                 method_name="chebyshev",
                 args=[],
                 kwargs={

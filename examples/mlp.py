@@ -223,7 +223,6 @@ def main():
         slots=4096,
         ring_degree=8192,
         backend="lattigo",
-        require_orion=True,
     )
     translator = GenericTranslator()
     module = translator.translate(operations, scheme_params, "mlp")

@@ -1,0 +1,8 @@
+venv
+**/dist/
+*.egg-info
+wheelhouse
+.python-version
+__pycache__
+data/
+*.mlir

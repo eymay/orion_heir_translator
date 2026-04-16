@@ -36,11 +36,6 @@ class SchemeParameters(Protocol):
         ...
 
     @property
-    def ciphertext_modulus_chain(self) -> List[int]:
-        """Chain of moduli for ciphertexts."""
-        ...
-
-    @property
     def plaintext_modulus(self) -> int:
         """Modulus for plaintexts."""
         ...
