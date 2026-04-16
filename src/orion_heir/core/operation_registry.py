@@ -24,7 +24,7 @@ from xdsl.dialects.builtin import (
 )
 from xdsl.dialects.func import FuncOp
 from orion_heir.dialects.orion import LinearTransformOp
-from orion_heir.dialects.lwe import RLWEEncodeOp, NewLWEPlaintextType
+from orion_heir.dialects.lwe import RLWEEncodeOp, LWEPlaintextType
 from orion_heir.core.translator import FHEOperation
 from orion_heir.dialects.ckks import (
     AddOp,
@@ -249,7 +249,7 @@ class CKKSPlaintextHandler(BaseOperationHandler):
                 raise ValueError(f"No cleartext operand found for {operation.op_type}")
 
         # encode the cleartext
-        plaintext_type = NewLWEPlaintextType([ct_ty.application_data, ct_ty.plaintext_space])
+        plaintext_type = LWEPlaintextType([ct_ty.plaintext_space])
         encode_op = RLWEEncodeOp(
             operands=[cleartext],
             result_types=[plaintext_type],
@@ -338,7 +338,7 @@ class CKKSRotationHandler(BaseOperationHandler):
         rotate_op = RotateOp(
             operands=[current_value],
             result_types=[result_type],
-            properties={"offset": IntegerAttr(offset, i32)},
+            properties={"static_shift": IntegerAttr(offset, i32)},
         )
 
         block.add_op(rotate_op)

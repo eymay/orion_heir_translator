@@ -9,7 +9,7 @@ from xdsl.ir import Operation
 from xdsl.traits import OpTrait
 from xdsl.utils.exceptions import VerifyException
 
-from orion_heir.dialects.lwe import NewLWECiphertextType, NewLWEPlaintextType
+from orion_heir.dialects.lwe import LWECiphertextType, LWEPlaintextType
 from orion_heir.dialects.polynomial import RingAttr
 
 
@@ -38,12 +38,12 @@ class SameOperandsAndResultRings(OpTrait):
 
         # Check result types
         for result in op.results:
-            if isinstance(result.type, NewLWECiphertextType):
+            if isinstance(result.type, LWECiphertextType):
                 check_ring(result.type.ciphertext_space.ring)
 
         # Check operand types
         for operand in op.operands:
-            if isinstance(operand.type, NewLWECiphertextType):
+            if isinstance(operand.type, LWECiphertextType):
                 check_ring(operand.type.ciphertext_space.ring)
 
 
@@ -58,9 +58,9 @@ class SameOperandsAndResultPlaintextTypes(OpTrait):
 
     @classmethod
     def verify(cls, op: Operation) -> None:
-        plaintext_type: NewLWEPlaintextType | None = None
+        plaintext_type: LWEPlaintextType | None = None
 
-        def check_plaintext_type(pt: NewLWEPlaintextType) -> None:
+        def check_plaintext_type(pt: LWEPlaintextType) -> None:
             nonlocal plaintext_type
             if plaintext_type is None:
                 plaintext_type = pt
@@ -70,20 +70,20 @@ class SameOperandsAndResultPlaintextTypes(OpTrait):
                     f"to have the same plaintextTypes, but found {plaintext_type} and {pt}"
                 )
 
-        def get_plaintext_from_ciphertext(ct: NewLWECiphertextType) -> NewLWEPlaintextType:
+        def get_plaintext_from_ciphertext(ct: LWECiphertextType) -> LWEPlaintextType:
             # Extract plaintext type from ciphertext type
-            return NewLWEPlaintextType([ct.application_data, ct.plaintext_space])
+            return LWEPlaintextType([ct.plaintext_space])
 
         # Check result types
         for result in op.results:
-            if isinstance(result.type, NewLWECiphertextType):
+            if isinstance(result.type, LWECiphertextType):
                 check_plaintext_type(get_plaintext_from_ciphertext(result.type))
 
         # Check operand types
         for operand in op.operands:
-            if isinstance(operand.type, NewLWECiphertextType):
+            if isinstance(operand.type, LWECiphertextType):
                 check_plaintext_type(get_plaintext_from_ciphertext(operand.type))
-            elif isinstance(operand.type, NewLWEPlaintextType):
+            elif isinstance(operand.type, LWEPlaintextType):
                 check_plaintext_type(operand.type)
 
 
@@ -98,9 +98,9 @@ class AllCiphertextTypesMatch(OpTrait):
 
     @classmethod
     def verify(cls, op: Operation) -> None:
-        ciphertext_type: NewLWECiphertextType | None = None
+        ciphertext_type: LWECiphertextType | None = None
 
-        def check_ciphertext_type(ct: NewLWECiphertextType) -> None:
+        def check_ciphertext_type(ct: LWECiphertextType) -> None:
             nonlocal ciphertext_type
             if ciphertext_type is None:
                 ciphertext_type = ct
@@ -112,12 +112,12 @@ class AllCiphertextTypesMatch(OpTrait):
 
         # Check result types
         for result in op.results:
-            if isinstance(result.type, NewLWECiphertextType):
+            if isinstance(result.type, LWECiphertextType):
                 check_ciphertext_type(result.type)
 
         # Check operand types
         for operand in op.operands:
-            if isinstance(operand.type, NewLWECiphertextType):
+            if isinstance(operand.type, LWECiphertextType):
                 check_ciphertext_type(operand.type)
 
 
@@ -147,8 +147,8 @@ class IsCiphertextPlaintextOp(OpTrait):
         operand_types = [operand.type for operand in op.operands]
 
         # Check that we have one ciphertext and one plaintext operand
-        ciphertext_count = sum(1 for t in operand_types if isinstance(t, NewLWECiphertextType))
-        plaintext_count = sum(1 for t in operand_types if isinstance(t, NewLWEPlaintextType))
+        ciphertext_count = sum(1 for t in operand_types if isinstance(t, LWECiphertextType))
+        plaintext_count = sum(1 for t in operand_types if isinstance(t, LWEPlaintextType))
 
         if ciphertext_count != 1 or plaintext_count != 1:
             raise VerifyException(
@@ -159,7 +159,7 @@ class IsCiphertextPlaintextOp(OpTrait):
 
         # Check that result is a ciphertext
         result_type = op.results[0].type
-        if not isinstance(result_type, NewLWECiphertextType):
+        if not isinstance(result_type, LWECiphertextType):
             raise VerifyException(
                 f"Operation {op.name} expected result to be ciphertext, " f"but got {result_type}"
             )
@@ -179,7 +179,7 @@ class SameCiphertextRings(OpTrait):
         rings: RingAttr | None = None
 
         for operand in op.operands:
-            if isinstance(operand.type, NewLWECiphertextType):
+            if isinstance(operand.type, LWECiphertextType):
                 operand_ring = operand.type.ciphertext_space.ring
                 if rings is None:
                     rings = operand_ring
@@ -193,29 +193,12 @@ class SameCiphertextRings(OpTrait):
 class SameApplicationData(OpTrait):
     """
     Trait that ensures all LWE types have the same application data.
-    This can be useful for ensuring encoding compatibility.
+    No-op: application_data was removed from LWE types for HEIR compatibility.
     """
 
     @classmethod
     def verify(cls, op: Operation) -> None:
-        application_data: Any = None
-
-        def check_application_data(app_data: Any) -> None:
-            nonlocal application_data
-            if application_data is None:
-                application_data = app_data
-            elif application_data != app_data:
-                raise VerifyException(
-                    f"Operation {op.name} requires all operands and results "
-                    f"to have the same application data"
-                )
-
-        # Check all operands and results
-        for value in list(op.operands) + list(op.results):
-            if isinstance(value.type, NewLWECiphertextType):
-                check_application_data(value.type.application_data)
-            elif isinstance(value.type, NewLWEPlaintextType):
-                check_application_data(value.type.application_data)
+        pass
 
 
 class AllTypesMatch(OpTrait):
