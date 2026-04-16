@@ -20,7 +20,7 @@ from xdsl.irdl import (
 from xdsl.traits import Pure
 
 # Ensure LWE is loaded
-from orion_heir.dialects.lwe import NewLWECiphertextType
+from orion_heir.dialects.lwe import LWECiphertextType
 
 
 @irdl_op_definition
@@ -29,7 +29,7 @@ class LinearTransformOp(IRDLOperation):
     Linear transformation operation in Orion.
 
     This operation performs a linear transformation using precomputed diagonal plaintexts.
-    It takes a ciphertext input and plaintext weights (diagonals) as inputs.
+    It takes a ciphertext input and cleartext weights (diagonals) as inputs.
 
     Example:
     %result = orion.linear_transform %ciphertext, %weights : (!ct, !pt) -> !ct
@@ -37,14 +37,14 @@ class LinearTransformOp(IRDLOperation):
 
     name = "orion.linear_transform"
 
-    input = operand_def(NewLWECiphertextType)
+    input = operand_def(LWECiphertextType)
 
     # Use cleartext types because BSGS implementation will rotate some of the
     # plaintexts and it's better to decode them live rather than decode,
     # rotate, then re-encode, Best would be to pre-rotate and store, but this
     # depends on the BSGS implementation which Orion doesn't know about.
     weights = operand_def(base(TensorType[f64]))
-    result = result_def(NewLWECiphertextType)
+    result = result_def(LWECiphertextType)
 
     traits = traits_def(Pure())
 
@@ -82,7 +82,7 @@ class ChebyshevOp(IRDLOperation):
     name = "orion.chebyshev"
 
     # Input ciphertext to evaluate polynomial on
-    input = operand_def(NewLWECiphertextType)
+    input = operand_def(LWECiphertextType)
 
     # Chebyshev polynomial coefficients (required)
     coefficients = prop_def(ArrayAttr[FloatAttr])
@@ -92,7 +92,7 @@ class ChebyshevOp(IRDLOperation):
     domain_end = prop_def(FloatAttr, default=FloatAttr(1.0, f64))
 
     # Result ciphertext
-    result = result_def(NewLWECiphertextType)
+    result = result_def(LWECiphertextType)
 
     irdl_options = [ParsePropInAttrDict()]
     assembly_format = "$input attr-dict `:` `(` type($input)  `)` `->` type($result)"
