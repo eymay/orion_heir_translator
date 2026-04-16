@@ -33,6 +33,8 @@ class OrionSchemeParameters(SchemeParameters):
         slots: int,
         ring_degree: int,
         backend: str = "lattigo",
+        keys_path: str = "data/keys.h5",
+        diags_path: str = "data/diagonals.h5",
     ):
         # Normalize logN to always be an integer for Orion
         self.logN = logN[0] if isinstance(logN, list) else logN
@@ -43,6 +45,8 @@ class OrionSchemeParameters(SchemeParameters):
         self.backend = backend
         self._ring_degree = ring_degree
         self._modulus_chain = None
+        self._keys_path = keys_path
+        self._diags_path = diags_path
         mod, aux = self._get_actual_primes()
         self.ciphertext_modulus_chain = mod
         self.auxiliary_modulus_chain = aux
@@ -87,13 +91,18 @@ class OrionSchemeParameters(SchemeParameters):
                 "backend": self.backend,
                 "fuse_modules": True,
                 "debug": False,
-                "diags_path": "data/diagonals.h5",
-                "keys_path": "data/keys.h5",
+                "diags_path": self._diags_path,
+                "keys_path": self._keys_path,
                 "io_mode": "save",
             },
         }
 
         print(f"🔧 Initializing Orion with LogN={self.logN}, LogQ={self.logQ}")
+
+        # Ensure the keys/diagonals directory exists before Orion writes to it
+        from pathlib import Path
+
+        Path(self._keys_path).parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize scheme
         scheme = Scheme()

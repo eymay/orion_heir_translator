@@ -6,7 +6,7 @@ Provides CKKS homomorphic encryption operations and attributes
 from collections.abc import Sequence
 from typing import ClassVar
 
-from xdsl.dialects.builtin import IntegerAttr, ArrayAttr, DenseArrayBase
+from xdsl.dialects.builtin import IntegerAttr, ArrayAttr, DenseArrayBase, f64
 from xdsl.ir import Attribute, Dialect, ParametrizedAttribute
 from xdsl.irdl import (
     BaseAttr,
