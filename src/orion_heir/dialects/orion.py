@@ -1,7 +1,7 @@
 """
 An Orion entry dialect for HEIR.
 
-Just handles the ops not in ORION.
+Just handles the ops not in Orion.
 """
 
 from xdsl.dialects.builtin import FloatAttr, ArrayAttr, f64, TensorType
@@ -20,22 +20,22 @@ from xdsl.irdl import (
 from xdsl.traits import Pure
 
 # Ensure LWE is loaded
-from .lwe import NewLWECiphertextType, NewLWEPlaintextType
+from orion_heir.dialects.lwe import NewLWECiphertextType
 
 
 @irdl_op_definition
 class LinearTransformOp(IRDLOperation):
     """
-    Linear transformation operation in CKKS (for compatibility with KeyMemRT).
+    Linear transformation operation in Orion.
 
     This operation performs a linear transformation using precomputed diagonal plaintexts.
-    It takes a ciphertext input and cleartext weights (diagonals) as inputs.
+    It takes a ciphertext input and plaintext weights (diagonals) as inputs.
 
     Example:
-    %result = ckks.linear_transform %ciphertext, %weights : (!ct, tensor<NxMxf64>) -> !ct
+    %result = orion.linear_transform %ciphertext, %weights : (!ct, !pt) -> !ct
     """
 
-    name = "ckks.linear_transform"
+    name = "orion.linear_transform"
 
     input = operand_def(NewLWECiphertextType)
 
@@ -54,7 +54,7 @@ class LinearTransformOp(IRDLOperation):
 @irdl_op_definition
 class ChebyshevOp(IRDLOperation):
     """
-    ORION Chebyshev polynomial evaluation operation.
+    Orion Chebyshev polynomial evaluation operation.
 
     Evaluates a Chebyshev polynomial series on a ciphertext using pre-computed
     coefficients. This operation directly maps to OpenFHE's EvalChebyshevSeries.
@@ -111,7 +111,7 @@ class ChebyshevOp(IRDLOperation):
         return (float(self.domain_start.value), float(self.domain_end.value))
 
 
-ORION = Dialect(
+Orion = Dialect(
     "orion",
     [
         LinearTransformOp,

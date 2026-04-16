@@ -6,9 +6,7 @@ Provides LWE cryptographic types and operations
 from collections.abc import Sequence
 
 from xdsl.dialects.builtin import (
-    IntAttr,
     IntegerAttr,
-    IntegerType,
     ArrayAttr,
     StringAttr,
     TensorType,
@@ -25,7 +23,7 @@ from xdsl.irdl import (
     traits_def,
 )
 from xdsl.parser import Parser
-from .declarative_parser import (
+from orion_heir.dialects.declarative_parser import (
     parse_parameters_declarative,
     create_field_specs,
     FieldType,
@@ -33,10 +31,9 @@ from .declarative_parser import (
 )
 from xdsl.printer import Printer
 from xdsl.traits import Pure
-from xdsl.utils.exceptions import ParseError
 
 # Import our custom dialects
-from .polynomial import RingAttr, PolynomialAttr
+from orion_heir.dialects.polynomial import RingAttr
 
 
 @irdl_attr_definition
@@ -170,7 +167,7 @@ class PlaintextSpaceAttr(ParametrizedAttribute):
         """Parse ring and encoding parameters declaratively."""
 
         # Import here to avoid circular imports
-        from .polynomial import RingAttr
+        from orion_heir.dialects.polynomial import RingAttr
 
         field_specs = create_field_specs(
             ring=(FieldType.FLEXIBLE_ATTRIBUTE, True, RingAttr),
@@ -207,7 +204,7 @@ class CiphertextSpaceAttr(ParametrizedAttribute):
     def parse_parameters(cls, parser: Parser) -> Sequence[Attribute]:
         """Parse ring, encryption_type, and size parameters declaratively."""
 
-        from .polynomial import RingAttr
+        from orion_heir.dialects.polynomial import RingAttr
 
         field_specs = create_field_specs(
             ring=(FieldType.FLEXIBLE_ATTRIBUTE, True, RingAttr),

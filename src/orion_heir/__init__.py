@@ -7,14 +7,14 @@ A standalone translator for converting Orion FHE operations to HEIR MLIR format.
 __version__ = "0.1.0"
 __author__ = "FHE Research Team"
 
-from .core.translator import GenericTranslator, create_translator
-from .core.types import FHEOperation
-from .frontends.orion.orion_frontend import OrionFrontend
-from .frontends.orion.scheme_params import OrionSchemeParameters
+from orion_heir.core.translator import GenericTranslator, create_translator
+from orion_heir.core.types import FHEOperation
+from orion_heir.frontends.orion.orion_frontend import OrionFrontend
+from orion_heir.frontends.orion.scheme_params import OrionSchemeParameters
 
 # Import CKKS interpreter components
 try:
-    from .ckks_interpreter import (
+    from orion_heir.ckks_interpreter import (
         CKKSDialectInterpreter,
         CKKSValidationFramework,
         OrionHeirValidationPipeline,

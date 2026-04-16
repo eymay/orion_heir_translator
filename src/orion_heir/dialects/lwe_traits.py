@@ -3,15 +3,14 @@ LWE and CKKS verification traits ported from HEIR to xDSL
 These traits provide verification constraints for homomorphic encryption operations
 """
 
-from abc import ABC
 from typing import Any
 
-from xdsl.ir import Operation, OpResult, SSAValue
+from xdsl.ir import Operation
 from xdsl.traits import OpTrait
 from xdsl.utils.exceptions import VerifyException
 
-from .lwe import NewLWECiphertextType, NewLWEPlaintextType
-from .polynomial import RingAttr
+from orion_heir.dialects.lwe import NewLWECiphertextType, NewLWEPlaintextType
+from orion_heir.dialects.polynomial import RingAttr
 
 
 class SameOperandsAndResultRings(OpTrait):
