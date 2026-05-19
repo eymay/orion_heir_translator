@@ -1061,13 +1061,20 @@ class ChebyshevHandler(BaseOperationHandler):
         type_builder: Any,
     ) -> SSAValue:
         """Handle Chebyshev polynomial evaluation."""
+        import math
+
         from orion_heir.dialects.orion import ChebyshevOp
         from xdsl.dialects.builtin import ArrayAttr, FloatAttr, f64
 
-        # Get coefficients from operation
+        # Get coefficients from operation. The preceding prescale mul_scalar
+        # already maps the input from [a,b] → [-1,1] (Orion's runtime does the
+        # same; the Go binding's GenerateChebyshev hard-codes interval
+        # [-1,1]). If we passed the original [a,b] here, Lattigo's
+        # polynomial.Evaluator would re-apply the affine transform and burn
+        # an extra level per chebyshev call.
         coeffs = operation.kwargs.get("coefficients", [])
-        domain_start = operation.kwargs.get("domain_start", -1.0)
-        domain_end = operation.kwargs.get("domain_end", 1.0)
+        domain_start = -1.0
+        domain_end = 1.0
 
         if not coeffs:
             print("⚠️ No coefficients provided for Chebyshev operation")
@@ -1077,14 +1084,21 @@ class ChebyshevHandler(BaseOperationHandler):
         coeff_attrs = [FloatAttr(float(c), f64) for c in coeffs]
         coeff_array = ArrayAttr(coeff_attrs)
 
-        # Manual bootstrapping to deal with OpenFHE issues; removed and see if
-        # we can deal with them from inside HEIR.
-        # bootstrap_result_type = type_builder.get_default_ciphertext_type()
-        # bootstrap_op = BootstrapOp(operands=[current_value], result_types=[bootstrap_result_type])
-        # block.add_op(bootstrap_op)
-        # bootstrapped_value = bootstrap_op.results[0]
-
-        result_type = type_builder.get_default_ciphertext_type()
+        # Use Lattigo's own depth formula (utils/bignum/polynomial.go:144):
+        #   Polynomial.Depth() = ⌈log₂(degree)⌉
+        # Each unit of depth costs one CKKS level. Orion's per-op `level`
+        # annotation only reports the post-chebyshev bookkeeping level (not
+        # the actual depth Lattigo consumes), so we compute it ourselves to
+        # keep the IR level state aligned with runtime reality.
+        degree = max(0, len(coeffs) - 1)
+        depth = 0 if degree < 2 else math.ceil(math.log2(degree))
+        ct_lvl = _get_ct_level(current_value)
+        if ct_lvl is not None:
+            result_type = type_builder.create_ciphertext_type_with_updated_level(
+                current_value.type, max(0, ct_lvl - depth)
+            )
+        else:
+            result_type = type_builder.get_default_ciphertext_type()
         cheby_op = ChebyshevOp(
             operands=[current_value],
             result_types=[result_type],
