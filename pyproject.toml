@@ -11,7 +11,7 @@ authors = [
 description = "Standalone translator from Orion FHE to HEIR MLIR"
 readme = "README.md"
 license = {text = "Apache-2.0"}
-requires-python = ">=3.8"
+requires-python = ">=3.10,<3.13"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
