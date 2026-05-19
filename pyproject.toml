@@ -36,7 +36,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-orion = ["orion-fhe"]
+orion = ["orion-fhe @ git+https://github.com/eymay/orion.git@exp-main"]
 dev = [
     "pytest>=6.0",
     "pytest-cov>=2.0",
