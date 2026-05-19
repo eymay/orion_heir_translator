@@ -26,6 +26,7 @@ from xdsl.dialects.func import FuncOp
 from orion_heir.dialects.orion import LinearTransformOp
 from orion_heir.dialects.lwe import (
     InverseCanonicalEncodingAttr,
+    LWECiphertextType,
     LWEPlaintextType,
     PlaintextSpaceAttr,
     RLWEEncodeOp,
@@ -34,6 +35,7 @@ from orion_heir.core.translator import FHEOperation
 from orion_heir.dialects.ckks import (
     AddOp,
     AddPlainOp,
+    LevelReduce,
     MulOp,
     MulPlainOp,
     RelinearizeOp,
@@ -59,6 +61,50 @@ def get_parent_func(block: Block) -> FuncOp:
     while not isinstance(func_op, FuncOp):
         func_op = func_op.parent_op()
     return func_op
+
+
+def _get_ct_level(value: SSAValue):
+    """Return the modulus_chain current level of a ciphertext SSA value, or None."""
+    if not isinstance(value.type, LWECiphertextType):
+        return None
+    return value.type.parameters[3].current.value.data
+
+
+def align_levels(
+    block: Block,
+    lhs: SSAValue,
+    rhs: SSAValue,
+    type_builder: Any,
+) -> tuple:
+    """Drop the higher-level operand to match the lower via ckks.level_reduce.
+
+    HEIR's binary CKKS verifiers (mul, add, sub, ...) require both operands
+    to live at the same modulus level. Operands produced by Orion can drift
+    apart when one passes through a level-dropping op (rescale after
+    mul_plain / scalar_mul) and its peer doesn't. Lattigo auto-aligns at
+    runtime; HEIR's IR doesn't, so we materialise the alignment explicitly.
+    """
+    lhs_lvl = _get_ct_level(lhs)
+    rhs_lvl = _get_ct_level(rhs)
+    if lhs_lvl is None or rhs_lvl is None or lhs_lvl == rhs_lvl:
+        return lhs, rhs
+
+    if lhs_lvl > rhs_lvl:
+        higher, lower_lvl, drop = lhs, rhs_lvl, lhs_lvl - rhs_lvl
+        higher_is_lhs = True
+    else:
+        higher, lower_lvl, drop = rhs, lhs_lvl, rhs_lvl - lhs_lvl
+        higher_is_lhs = False
+
+    reduced_type = type_builder.create_ciphertext_type_with_updated_level(higher.type, lower_lvl)
+    level_reduce = LevelReduce(
+        operands=[higher],
+        result_types=[reduced_type],
+        properties={"levelToDrop": IntegerAttr(drop, IntegerType(64))},
+    )
+    block.add_op(level_reduce)
+    aligned = level_reduce.results[0]
+    return (aligned, rhs) if higher_is_lhs else (lhs, aligned)
 
 
 class OperationHandler(Protocol):
@@ -114,6 +160,11 @@ class CKKSArithmeticHandler(BaseOperationHandler):
             if second_operand is None:
                 # If no second operand, return current value unchanged
                 return current_value
+
+            # Align operand levels (HEIR ckks.add/sub verifier requires match)
+            current_value, second_operand = align_levels(
+                block, current_value, second_operand, type_builder
+            )
 
             # Determine result type
             result_type = type_builder.infer_result_type(
@@ -171,6 +222,11 @@ class CKKSMulHandler(BaseOperationHandler):
                 other_operand = current_value
         else:
             other_operand = current_value
+
+        # Align operand levels (HEIR ckks.mul verifier requires match)
+        current_value, other_operand = align_levels(
+            block, current_value, other_operand, type_builder
+        )
 
         # 1. Create multiplication operation (doubles scaling factor)
         result_type = type_builder.infer_result_type(
